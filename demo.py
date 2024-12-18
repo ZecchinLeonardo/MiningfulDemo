@@ -15,7 +15,7 @@ def generate_fake_data(timestamp: datetime) -> list:
     machine_status = np.random.choice([0, 1], p=[0.95, 0.05])  # 0 = normal, 1 = failure
     return [timestamp, sensor_1, sensor_2, sensor_3, machine_status]
 
-# Fake streaming data
+# Initialize streaming data
 def initialize_stream_data(data_window_size: int, update_interval: int) -> pd.DataFrame:
     total_data_points = (data_window_size * 60) // update_interval
     base_time = datetime.now() - timedelta(seconds=total_data_points * update_interval)
@@ -53,9 +53,12 @@ st.sidebar.header("⚙️ Configuration")
 update_interval = st.sidebar.slider("Update Interval (seconds):", 1, 60, 3)
 data_window_size = st.sidebar.slider("Data Window Size (minutes):", 1, 60, 15)
 
-# Initialize streaming data
+# Initialize streaming data and streaming state
 if "stream_data" not in st.session_state:
     st.session_state.stream_data = initialize_stream_data(data_window_size, update_interval)
+
+if "streaming" not in st.session_state:
+    st.session_state.streaming = False
 
 # Train the model
 st.subheader("📊 Model Training on Historical Data")
@@ -63,17 +66,24 @@ model, report = train_model(st.session_state.stream_data)
 st.success("Model training complete!")
 st.text_area("Classification Report:", report, height=200)
 
-# Real-time data stream
+# Streaming controls
 st.subheader("📡 Real-time Data Stream")
-stream_container = st.empty()
+col1, col2 = st.columns(2)
+with col1:
+    if st.session_state.streaming:
+        if st.button("🛑 Stop Streaming"):
+            st.session_state.streaming = False
+            st.rerun()
+    else:
+        if st.button("▶️ Start Streaming"):
+            st.session_state.streaming = True
+            st.session_state.stream_start_time = time.time()  # Record start time
+            st.rerun()
 
-# Stop/start streaming toggle
-if "streaming" not in st.session_state:
-    st.session_state.streaming = True
+with col2:
+    st.metric("Update Interval", f"{update_interval} seconds")
 
-if st.button("🛑 Stop Streaming" if st.session_state.streaming else "▶️ Start Streaming"):
-    st.session_state.streaming = not st.session_state.streaming
-
+# Real-time updates
 if st.session_state.streaming:
     # Simulate new data arrival
     new_timestamp = st.session_state.stream_data.iloc[-1]['timestamp'] + timedelta(seconds=update_interval)
@@ -90,15 +100,23 @@ if st.session_state.streaming:
     data_with_predictions = predict(model, data_window)
 
     # Display streaming data and predictions
-    with stream_container.container():
-        st.dataframe(
-            data_with_predictions.tail(20).style.applymap(
-                lambda x: "background-color: red; color: white;" if x == 1 else "",
-                subset=['prediction']
-            )
+    st.dataframe(
+        data_with_predictions.tail(20).style.map(
+            lambda x: "background-color: red; color: white;" if x == 1 else "",
+            subset=['prediction']
         )
+    )
 
-    # Wait for the next update
+    # Check for limited demo time (e.g., 5 minutes)
+    if "stream_start_time" in st.session_state:
+        elapsed_time = time.time() - st.session_state.stream_start_time
+        if elapsed_time > 300:  # Stop after 5 minutes
+            st.session_state.streaming = False
+            st.warning("Demo time is over. Click '▶️ Start Streaming' to restart.")
+
+    # Wait for the next update and rerun
     time.sleep(update_interval)
+    st.rerun()
+
 else:
-    st.warning("Streaming stopped. Click '▶️ Start Streaming' to resume.")
+    st.info("Streaming paused. Click '▶️ Start Streaming' to continue.")
