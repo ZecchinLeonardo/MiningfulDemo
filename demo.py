@@ -3,120 +3,260 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta
-from sklearn.ensemble import RandomForestClassifier
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
+from sklearn.metrics import mean_squared_error
 
-# Simulate data generation
-def generate_fake_data(timestamp: datetime) -> list:
-    sensor_1 = np.random.normal(50, 5)
-    sensor_2 = np.random.normal(100, 10)
-    sensor_3 = np.random.normal(75, 7)
-    machine_status = np.random.choice([0, 1], p=[0.95, 0.05])  # 0 = normal, 1 = failure
-    return [timestamp, sensor_1, sensor_2, sensor_3, machine_status]
+# -------------------------------------------------------
+# 1) Load the entire CSV once
+# -------------------------------------------------------
+def load_data(file_path):
+    df = pd.read_csv(file_path, sep=';', parse_dates=['to_timestamp'])
+    df.rename(columns={'to_timestamp': 'timestamp'}, inplace=True)
+    df.sort_values('timestamp', inplace=True, ignore_index=True)
+    return df
 
-# Initialize streaming data
-def initialize_stream_data(data_window_size: int, update_interval: int) -> pd.DataFrame:
-    total_data_points = (data_window_size * 60) // update_interval
-    base_time = datetime.now() - timedelta(seconds=total_data_points * update_interval)
-    data = [
-        generate_fake_data(base_time + timedelta(seconds=i * update_interval))
-        for i in range(total_data_points)
-    ]
-    return pd.DataFrame(data, columns=['timestamp', 'sensor_1', 'sensor_2', 'sensor_3', 'machine_status'])
-
-# Train a simple model on historical data
+# -------------------------------------------------------
+# 2) Train a simple model on the entire dataset
+# -------------------------------------------------------
 def train_model(df: pd.DataFrame):
-    X = df[['sensor_1', 'sensor_2', 'sensor_3']]
-    y = df['machine_status']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestClassifier(random_state=42)
-    model.fit(X_train, y_train)
-    return model, classification_report(y_test, model.predict(X_test))
+    feature_columns = [
+        'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
+        'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
+        'temp_in_z1', 'temp_out_z1', 'temp_in_z2', 'temp_out_z2',
+        'temp_in_z3', 'temp_out_z3', 'temp_in_z4', 'temp_out_z4',
+        'temp_in_z5', 'temp_out_z5', 'temp_in_z6', 'temp_out_z6',
+        'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
+        'temp_in_z9', 'temp_out_z9'
+    ]
+    target_column = 'moisture_in_z0'
 
-# Predict on new data
+    df_model = df.dropna(subset=feature_columns + [target_column])
+    if df_model.empty:
+        return None, None
+
+    X = df_model[feature_columns]
+    y = df_model[target_column]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    model = RandomForestRegressor(random_state=42)
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    mse = mean_squared_error(y_test, predictions)
+    return model, mse
+
+# -------------------------------------------------------
+# 3) Predict on a given window
+# -------------------------------------------------------
 def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
-    if data_window.empty:
+    if model is None or data_window.empty:
         return data_window
-    X = data_window[['sensor_1', 'sensor_2', 'sensor_3']]
-    predictions = model.predict(X)
+
+    feature_columns = [
+        'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
+        'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
+        'temp_in_z1', 'temp_out_z1', 'temp_in_z2', 'temp_out_z2',
+        'temp_in_z3', 'temp_out_z3', 'temp_in_z4', 'temp_out_z4',
+        'temp_in_z5', 'temp_out_z5', 'temp_in_z6', 'temp_out_z6',
+        'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
+        'temp_in_z9', 'temp_out_z9'
+    ]
+    X = data_window[feature_columns].dropna()
+    if X.empty:
+        return data_window
+
+    preds = model.predict(X)
     data_window = data_window.copy()
-    data_window['prediction'] = predictions
+    data_window.loc[X.index, 'predicted_moisture'] = preds
     return data_window
 
-# Streamlit app
+# -------------------------------------------------------
+# 4) Plot variable distributions
+# -------------------------------------------------------
+def plot_distributions(df: pd.DataFrame):
+    fig, ax = plt.subplots(1, 4, figsize=(20, 5))
+    columns_to_plot = ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+
+    for i, col in enumerate(columns_to_plot):
+        if col in df.select_dtypes(include=[np.number]).columns:
+            if df[col].dropna().empty:
+                ax[i].text(0.5, 0.5, f'No data for {col}', ha='center', va='center')
+            else:
+                df[col].plot(kind='density', ax=ax[i], legend=False)
+            ax[i].set_title(f'{col} Distribution')
+    st.pyplot(fig)
+
+# -------------------------------------------------------
+# 5) Plot correlation heatmap
+# -------------------------------------------------------
+def plot_correlation(df: pd.DataFrame):
+    numeric_df = df.select_dtypes(include=[np.number]).dropna(axis=1, how='all')
+    if numeric_df.shape[1] < 2:
+        st.write("Not enough numeric columns for a correlation heatmap.")
+        return
+    corr = numeric_df.corr()
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+    ax.set_title('Correlation Heatmap')
+    st.pyplot(fig)
+
+# -------------------------------------------------------
+# 6) Helper: find the row index that matches or exceeds a given timestamp
+# -------------------------------------------------------
+def find_index_for_time(df: pd.DataFrame, t: pd.Timestamp) -> int:
+    """Return the first row index where df['timestamp'] >= t, or the last row if none."""
+    matching = df.index[df['timestamp'] >= t]
+    return matching[0] if len(matching) > 0 else len(df) - 1
+
+# -------------------------------------------------------
+# 7) Helper: get window data from index/time
+# -------------------------------------------------------
+def get_window_data(df, end_index: int, days: int):
+    """Return rows in [end_time - days, end_time], where end_time is at `end_index` row."""
+    if end_index < 0 or end_index >= len(df):
+        return pd.DataFrame()
+    end_time = df.loc[end_index, 'timestamp']
+    start_time = end_time - timedelta(days=days)
+    return df[(df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)]
+
+# -------------------------------------------------------
+# 8) Streamlit App
+# -------------------------------------------------------
 st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
 st.title("🚀 Miningful Predictive Maintenance Demo")
 
-# Sidebar controls
+# 8.1) Sidebar config
 st.sidebar.header("⚙️ Configuration")
-update_interval = st.sidebar.slider("Update Interval (seconds):", 1, 60, 3)
-data_window_size = st.sidebar.slider("Data Window Size (minutes):", 1, 60, 15)
+data_window_size = st.sidebar.slider("Data Window Size (days):", 3, 7, 3, key="data_window_slider")
+polling_interval = timedelta(seconds=10)
 
-# Initialize streaming data and streaming state
+# 8.2) Load data & train model (only once)
 if "stream_data" not in st.session_state:
-    st.session_state.stream_data = initialize_stream_data(data_window_size, update_interval)
+    data_path = "datirs_SK.csv"
+    st.session_state.stream_data = load_data(data_path)
 
+df_all = st.session_state.stream_data
+
+if "model" not in st.session_state:
+    with st.spinner("Training model..."):
+        model, mse = train_model(df_all)
+        st.session_state.model = model
+        st.session_state.model_mse = mse
+
+# 8.3) Initialize session state
 if "streaming" not in st.session_state:
     st.session_state.streaming = False
 
-# Train the model
-st.subheader("📊 Model Training on Historical Data")
-model, report = train_model(st.session_state.stream_data)
-st.success("Model training complete!")
-st.text_area("Classification Report:", report, height=200)
+if "current_index" not in st.session_state:
+    st.session_state.current_index = 0
 
-# Streaming controls
-st.subheader("📡 Real-time Data Stream")
+# We track if we've set an "initial" index after changing the window size or first load
+# so we can show a full initial window right away.
+if "initial_window_set" not in st.session_state:
+    st.session_state.initial_window_set = False
+
+if "show_graphs" not in st.session_state:
+    st.session_state.show_graphs = False
+
+# -------------------------------------------------------
+# 8.4) On first load (or whenever the user moves the slider),
+#      define an "initial" window: [start_of_dataset, start_of_dataset + data_window_size]
+#      Then set current_index to that "end_time" row.
+# -------------------------------------------------------
+def set_initial_window():
+    """Sets the initial window so that we start with a full data_window_size of data."""
+    dataset_start = df_all['timestamp'].min()
+    # End time is dataset_start + data_window_size
+    initial_end_time = dataset_start + timedelta(days=data_window_size)
+    # Find the row index matching that end time
+    idx = find_index_for_time(df_all, initial_end_time)
+    st.session_state.current_index = idx
+    st.session_state.initial_window_set = True
+
+# Run the above if not set or if the user just changed the slider
+# A naive approach: we always set it if it hasn't been set yet.
+if not st.session_state.initial_window_set:
+    set_initial_window()
+
+# -------------------------------------------------------
+# 8.5) Show model info
+# -------------------------------------------------------
+if st.session_state.model is not None:
+    st.success("Model training complete!")
+    st.metric("Mean Squared Error", round(st.session_state.model_mse, 2))
+else:
+    st.warning("Not enough data to train the model.")
+
+# -------------------------------------------------------
+# 8.6) Start/Stop streaming with immediate rerun to avoid double-click
+# -------------------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
-    if st.session_state.streaming:
-        if st.button("🛑 Stop Streaming"):
-            st.session_state.streaming = False
-            st.rerun()
-    else:
+    if not st.session_state.streaming:
         if st.button("▶️ Start Streaming"):
             st.session_state.streaming = True
-            st.session_state.stream_start_time = time.time()  # Record start time
+            st.rerun()
+    else:
+        if st.button("🛑 Stop Streaming"):
+            st.session_state.streaming = False
+            st.session_state.show_graphs = False
             st.rerun()
 
-with col2:
-    st.metric("Update Interval", f"{update_interval} seconds")
-
-# Real-time updates
+# -------------------------------------------------------
+# 8.7) Handle streaming
+# -------------------------------------------------------
 if st.session_state.streaming:
-    # Simulate new data arrival
-    new_timestamp = st.session_state.stream_data.iloc[-1]['timestamp'] + timedelta(seconds=update_interval)
-    new_data = generate_fake_data(new_timestamp)
-    new_row = pd.DataFrame([new_data], columns=['timestamp', 'sensor_1', 'sensor_2', 'sensor_3', 'machine_status'])
-    st.session_state.stream_data = pd.concat([st.session_state.stream_data, new_row], ignore_index=True)
+    st.subheader("📡 Real-time Data Stream (Streaming in progress)")
 
-    # Update data window
-    current_time = datetime.now()
-    start_time = current_time - timedelta(minutes=data_window_size)
-    data_window = st.session_state.stream_data[st.session_state.stream_data['timestamp'] >= start_time]
+    if 0 <= st.session_state.current_index < len(df_all):
+        data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
+        data_with_preds = predict(st.session_state.model, data_window)
+        st.dataframe(data_with_preds.tail(20))
 
-    # Make predictions
-    data_with_predictions = predict(model, data_window)
+        time.sleep(polling_interval.total_seconds())  # simulate real time
+        st.session_state.current_index += 1
+        st.rerun()
 
-    # Display streaming data and predictions
-    st.dataframe(
-        data_with_predictions.tail(20).style.map(
-            lambda x: "background-color: red; color: white;" if x == 1 else "",
-            subset=['prediction']
-        )
-    )
+    else:
+        st.warning("Reached the end of the dataset.")
+        st.session_state.streaming = False
 
-    # Check for limited demo time (e.g., 5 minutes)
-    if "stream_start_time" in st.session_state:
-        elapsed_time = time.time() - st.session_state.stream_start_time
-        if elapsed_time > 300:  # Stop after 5 minutes
-            st.session_state.streaming = False
-            st.warning("Demo time is over. Click '▶️ Start Streaming' to restart.")
-
-    # Wait for the next update and rerun
-    time.sleep(update_interval)
-    st.rerun()
-
+# -------------------------------------------------------
+# 8.8) Paused (not streaming)
+# -------------------------------------------------------
 else:
-    st.info("Streaming paused. Click '▶️ Start Streaming' to continue.")
+    st.subheader("📡 Real-time Data Stream (Paused)")
+
+    if len(df_all) > 0:
+        end_idx = min(st.session_state.current_index, len(df_all) - 1)
+        data_window = get_window_data(df_all, end_idx, data_window_size)
+        data_with_preds = predict(st.session_state.model, data_window)
+
+        st.write(f"**Current Window ({len(data_with_preds)} rows)**")
+        st.dataframe(data_with_preds)
+    else:
+        data_window = pd.DataFrame()
+        st.write("No data loaded.")
+
+    if st.button("Generate Graphs"):
+        st.session_state.show_graphs = True
+        st.rerun()
+
+    if st.session_state.show_graphs:
+        st.subheader("🔍 Data Insights")
+        st.write("### Sensor Data Distributions")
+        if not data_window.empty:
+            plot_distributions(data_window)
+        else:
+            st.write("No data available.")
+
+        st.write("### Data Correlation")
+        if not data_window.empty:
+            plot_correlation(data_window)
+        else:
+            st.write("No data available.")
