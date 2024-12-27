@@ -9,14 +9,12 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 
-from dotenv import load_dotenv
 import os
 import boto3
 import pandas as pd
 from io import StringIO
 
 
-load_dotenv()
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -40,8 +38,9 @@ def load_data(file_path):
 def load_data_remote():
     obj = s3.get_object(Bucket='miningfuldemo', Key='datirs_SK.csv')
     data = obj['Body'].read().decode('utf-8')
-    df = pd.read_csv(StringIO(data))
-    print(df.head())
+    df = pd.read_csv(StringIO(data), sep=';', parse_dates=['to_timestamp'])
+    df.rename(columns={'to_timestamp': 'timestamp'}, inplace=True)
+    df.sort_values('timestamp', inplace=True, ignore_index=True)
     return df
 
 # -------------------------------------------------------
