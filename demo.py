@@ -27,10 +27,6 @@ s3 = boto3.client(
     aws_secret_access_key=aws_secret_access_key
 )
 
-obj = s3.get_object(Bucket='my-nda-bucket', Key='data/myfile.csv')
-data = obj['Body'].read().decode('utf-8')
-
-df = pd.read_csv(StringIO(data))
 
 # -------------------------------------------------------
 # 1) Load the entire CSV once
@@ -39,6 +35,12 @@ def load_data(file_path):
     df = pd.read_csv(file_path, sep=';', parse_dates=['to_timestamp'])
     df.rename(columns={'to_timestamp': 'timestamp'}, inplace=True)
     df.sort_values('timestamp', inplace=True, ignore_index=True)
+    return df
+
+def load_data_remote():
+    obj = s3.get_object(Bucket='miningfuldemo', Key='datirs_SK.csv')
+    data = obj['Body'].read().decode('utf-8')
+    df = pd.read_csv(StringIO(data))
     return df
 
 # -------------------------------------------------------
@@ -161,7 +163,8 @@ polling_interval = timedelta(seconds=10)
 # 8.2) Load data & train model (only once)
 if "stream_data" not in st.session_state:
     data_path = "datirs_SK.csv"
-    st.session_state.stream_data = load_data(data_path)
+    #st.session_state.stream_data = load_data(data_path)
+    st.session_state.stream_data = load_data_remote()
 
 df_all = st.session_state.stream_data
 
