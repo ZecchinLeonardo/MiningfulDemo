@@ -41,6 +41,7 @@ def load_data_remote():
     obj = s3.get_object(Bucket='miningfuldemo', Key='datirs_SK.csv')
     data = obj['Body'].read().decode('utf-8')
     df = pd.read_csv(StringIO(data))
+    print(df.head())
     return df
 
 # -------------------------------------------------------
