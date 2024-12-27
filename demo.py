@@ -124,11 +124,23 @@ def plot_correlation(df: pd.DataFrame):
     if numeric_df.shape[1] < 2:
         st.write("Not enough numeric columns for a correlation heatmap.")
         return
+    
     corr = numeric_df.corr()
+    
     fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax)
+    sns.heatmap(
+        corr,
+        annot=True,            # show correlation values
+        fmt=".2f",             # limit decimal places
+        cmap='coolwarm',
+        ax=ax,
+        annot_kws={"fontsize": 8},  # reduce annotation font
+        cbar_kws={"shrink": 0.8},   # shrink colorbar if needed
+    )
+
     ax.set_title('Correlation Heatmap')
     st.pyplot(fig)
+
 
 # -------------------------------------------------------
 # 6) Helper: find the row index that matches or exceeds a given timestamp
