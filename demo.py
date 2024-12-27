@@ -15,11 +15,11 @@ import boto3
 import pandas as pd
 from io import StringIO
 
-try:
-    load_dotenv()
-except Exception as e:
-    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+load_dotenv()
+aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
     
 s3 = boto3.client(
     's3',
