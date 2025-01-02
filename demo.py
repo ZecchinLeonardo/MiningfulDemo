@@ -13,18 +13,18 @@ import os
 import boto3
 import pandas as pd
 from io import StringIO
+import plotly.express as px
 
 
+# AWS Credentials
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 
-    
 s3 = boto3.client(
     's3',
     aws_access_key_id=aws_access_key_id,
     aws_secret_access_key=aws_secret_access_key
 )
-
 
 # -------------------------------------------------------
 # 1) Load the entire CSV once
@@ -101,7 +101,7 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     return data_window
 
 # -------------------------------------------------------
-# 4) Plot variable distributions
+# 4) Plot variable distributions (original)
 # -------------------------------------------------------
 def plot_distributions(df: pd.DataFrame):
     fig, ax = plt.subplots(1, 4, figsize=(20, 5))
@@ -158,10 +158,89 @@ def get_window_data(df, end_index: int, days: int):
     return df[(df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)]
 
 # -------------------------------------------------------
+# 9) Additional: Compare distribution window vs. overall
+# -------------------------------------------------------
+def plot_distribution_comparison(df_all: pd.DataFrame, df_window: pd.DataFrame):
+    """
+    Plots the density comparison of the current window data vs. the entire dataset
+    for a few selected columns.
+    """
+    columns_to_plot = ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+    
+    fig, axs = plt.subplots(1, len(columns_to_plot), figsize=(20, 5))
+    
+    for i, col in enumerate(columns_to_plot):
+        ax = axs[i]
+        if col in df_all.select_dtypes(include=[np.number]).columns:
+            df_all[col].dropna().plot(kind='density', ax=ax, label='Overall', legend=False)
+        if col in df_window.select_dtypes(include=[np.number]).columns:
+            df_window[col].dropna().plot(kind='density', ax=ax, label='Window', legend=False)
+        
+        ax.set_title(f'Density: {col}')
+        ax.legend()
+    st.pyplot(fig)
+
+# -------------------------------------------------------
+# 10) Additional: Plot actual vs. predicted time series
+# -------------------------------------------------------
+def plot_timeseries_with_prediction(df: pd.DataFrame, time_col='timestamp',
+                                    actual_col='moisture_in_z0',
+                                    predicted_col='predicted_moisture'):
+    """
+    Plots a time series chart comparing actual vs. predicted moisture.
+    Only plots rows where predicted_moisture is available.
+    """
+    if predicted_col not in df.columns or df[predicted_col].dropna().empty:
+        st.write("No predictions to plot yet.")
+        return
+    
+    # Filter to only rows that have non-NaN predictions
+    df_filtered = df.dropna(subset=[predicted_col])
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df_filtered[time_col], df_filtered[actual_col], label='Actual', color='blue')
+    ax.plot(df_filtered[time_col], df_filtered[predicted_col], label='Predicted', color='red')
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Moisture")
+    ax.set_title("Actual vs. Predicted Moisture Over Time")
+    ax.legend()
+    st.pyplot(fig)
+
+def plot_timeseries_with_prediction_interactive(
+    df: pd.DataFrame, 
+    time_col='timestamp',
+    actual_col='moisture_in_z0',
+    predicted_col='predicted_moisture'
+):
+    """
+    Plots an interactive time series chart comparing actual vs. predicted moisture
+    using Plotly. Only plots rows where predicted_moisture is available.
+    """
+    if predicted_col not in df.columns or df[predicted_col].dropna().empty:
+        st.write("No predictions to plot yet.")
+        return
+
+    # Filter to only rows that have non-NaN predictions
+    df_filtered = df.dropna(subset=[predicted_col])
+
+    # Construct a Plotly figure with two lines
+    fig = px.line(
+        df_filtered,
+        x=time_col,
+        y=[actual_col, predicted_col],
+        labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
+        title="Actual vs. Predicted Moisture Over Time"
+    )
+
+    # Show it in Streamlit
+    st.plotly_chart(fig, use_container_width=True)
+
+# -------------------------------------------------------
 # 8) Streamlit App
 # -------------------------------------------------------
 st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
-st.title("🚀 Miningful Predictive Maintenance Demo")
+st.image("res/Miningful_NoBG.png", width=150)
+st.title("Miningful Predictive Maintenance Demo")
 
 # 8.1) Sidebar config
 st.sidebar.header("⚙️ Configuration")
@@ -170,8 +249,8 @@ polling_interval = timedelta(seconds=10)
 
 # 8.2) Load data & train model (only once)
 if "stream_data" not in st.session_state:
-    data_path = "datirs_SK.csv"
-    #st.session_state.stream_data = load_data(data_path)
+    # data_path = "datirs_SK.csv"
+    # st.session_state.stream_data = load_data(data_path)
     st.session_state.stream_data = load_data_remote()
 
 df_all = st.session_state.stream_data
@@ -189,37 +268,29 @@ if "streaming" not in st.session_state:
 if "current_index" not in st.session_state:
     st.session_state.current_index = 0
 
-# We track if we've set an "initial" index after changing the window size or first load
-# so we can show a full initial window right away.
 if "initial_window_set" not in st.session_state:
     st.session_state.initial_window_set = False
 
+# We'll store the "show_graphs" state for the data exploration tab if desired
 if "show_graphs" not in st.session_state:
     st.session_state.show_graphs = False
 
 # -------------------------------------------------------
 # 8.4) On first load (or whenever the user moves the slider),
-#      define an "initial" window: [start_of_dataset, start_of_dataset + data_window_size]
-#      Then set current_index to that "end_time" row.
+#      define an "initial" window
 # -------------------------------------------------------
 def set_initial_window():
     """Sets the initial window so that we start with a full data_window_size of data."""
     dataset_start = df_all['timestamp'].min()
-    # End time is dataset_start + data_window_size
     initial_end_time = dataset_start + timedelta(days=data_window_size)
-    # Find the row index matching that end time
     idx = find_index_for_time(df_all, initial_end_time)
     st.session_state.current_index = idx
     st.session_state.initial_window_set = True
 
-# Run the above if not set or if the user just changed the slider
-# A naive approach: we always set it if it hasn't been set yet.
 if not st.session_state.initial_window_set:
     set_initial_window()
 
-# -------------------------------------------------------
 # 8.5) Show model info
-# -------------------------------------------------------
 if st.session_state.model is not None:
     st.success("Model training complete!")
     st.metric("Mean Squared Error", round(st.session_state.model_mse, 2))
@@ -227,70 +298,109 @@ else:
     st.warning("Not enough data to train the model.")
 
 # -------------------------------------------------------
-# 8.6) Start/Stop streaming with immediate rerun to avoid double-click
+# Create Tabs
 # -------------------------------------------------------
-col1, col2 = st.columns(2)
-with col1:
-    if not st.session_state.streaming:
-        if st.button("▶️ Start Streaming"):
-            st.session_state.streaming = True
+tab1, tab2 = st.tabs(["Predictions", "Data Exploration"])
+
+# =======================================================
+# TAB 1: DATA EXPLORATION
+# =======================================================
+with tab2:
+    st.subheader("Data Exploration")
+
+    # Button to generate (or hide) graphs
+    if not st.session_state.show_graphs:
+        if st.button("Generate Data Exploration Graphs"):
+            st.session_state.show_graphs = True
             st.rerun()
     else:
-        if st.button("🛑 Stop Streaming"):
-            st.session_state.streaming = False
+        if st.button("Hide Data Exploration Graphs"):
             st.session_state.show_graphs = False
             st.rerun()
 
-# -------------------------------------------------------
-# 8.7) Handle streaming
-# -------------------------------------------------------
-if st.session_state.streaming:
-    st.subheader("📡 Real-time Data Stream (Streaming in progress)")
+    if st.session_state.show_graphs:
+        data_window = pd.DataFrame()
+        end_idx = min(st.session_state.current_index, len(df_all) - 1)
+        if len(df_all) > 0:
+            data_window = get_window_data(df_all, end_idx, data_window_size)
 
-    if 0 <= st.session_state.current_index < len(df_all):
-        data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
-        data_with_preds = predict(st.session_state.model, data_window)
-        st.dataframe(data_with_preds.tail(20))
+        # 1) Full data distributions
+        st.write("### Sensor Data Distributions (Overall Dataset)")
+        if not df_all.empty:
+            plot_distributions(df_all)
+        else:
+            st.write("No data available.")
 
-        time.sleep(polling_interval.total_seconds())  # simulate real time
-        st.session_state.current_index += 1
-        st.rerun()
+        # 2) Correlation heatmap (Overall)
+        st.write("### Correlation Heatmap (Overall Dataset)")
+        if not df_all.empty:
+            plot_correlation(df_all)
+        else:
+            st.write("No data available.")
+
+        # 3) Compare window distribution vs. entire dataset
+        st.write("### Current Window vs. Overall Distribution")
+        if not data_window.empty:
+            plot_distribution_comparison(df_all, data_window)
+        else:
+            st.write("No current window data to compare.")
+
+# =======================================================
+# TAB 2: PREDICTIONS
+# =======================================================
+with tab1:
+    st.subheader("Predictions and Real-Time Stream")
+
+    # Start/Stop streaming
+    col1, col2 = st.columns(2)
+    with col1:
+        if not st.session_state.streaming:
+            if st.button("▶️ Start Streaming"):
+                st.session_state.streaming = True
+                st.rerun()
+        else:
+            if st.button("🛑 Stop Streaming"):
+                st.session_state.streaming = False
+                st.rerun()
+
+    # Streaming logic
+    if st.session_state.streaming:
+        st.write("**Streaming in progress...**")
+
+        # If we're within bounds
+        if 0 <= st.session_state.current_index < len(df_all):
+            data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
+            data_with_preds = predict(st.session_state.model, data_window)
+
+            # Optionally show the last few predictions in a small table
+            st.write("Last few predictions in the current window:")
+            st.dataframe(data_with_preds.tail(5))  # smaller table
+
+            # Plot time series (actual vs. predicted) for the current window
+            plot_timeseries_with_prediction_interactive(data_with_preds)
+
+            # Simulate real-time
+            time.sleep(polling_interval.total_seconds())
+            st.session_state.current_index += 1
+            st.rerun()
+
+        else:
+            st.warning("Reached the end of the dataset.")
+            st.session_state.streaming = False
 
     else:
-        st.warning("Reached the end of the dataset.")
-        st.session_state.streaming = False
-
-# -------------------------------------------------------
-# 8.8) Paused (not streaming)
-# -------------------------------------------------------
-else:
-    st.subheader("📡 Real-time Data Stream (Paused)")
-
-    if len(df_all) > 0:
+        st.write("**Streaming is paused.**")
+        # Show predictions for the current window if available
         end_idx = min(st.session_state.current_index, len(df_all) - 1)
         data_window = get_window_data(df_all, end_idx, data_window_size)
         data_with_preds = predict(st.session_state.model, data_window)
 
-        st.write(f"**Current Window ({len(data_with_preds)} rows)**")
-        st.dataframe(data_with_preds)
-    else:
-        data_window = pd.DataFrame()
-        st.write("No data loaded.")
-
-    if st.button("Generate Graphs"):
-        st.session_state.show_graphs = True
-        st.rerun()
-
-    if st.session_state.show_graphs:
-        st.subheader("🔍 Data Insights")
-        st.write("### Sensor Data Distributions")
-        if not data_window.empty:
-            plot_distributions(data_window)
+        st.write("Last few predictions in the current window:")
+        if not data_with_preds.empty:
+            st.dataframe(data_with_preds.tail(5))  # smaller table
         else:
-            st.write("No data available.")
+            st.write("No data available in the current window.")
 
-        st.write("### Data Correlation")
-        if not data_window.empty:
-            plot_correlation(data_window)
-        else:
-            st.write("No data available.")
+        # Plot time series (actual vs predicted) for the current window
+        plot_timeseries_with_prediction_interactive(data_with_preds)
+
