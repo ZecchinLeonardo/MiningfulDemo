@@ -239,7 +239,7 @@ def plot_timeseries_with_prediction_interactive(
 # 8) Streamlit App
 # -------------------------------------------------------
 st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
-st.image("res/Miningful_NoBG.png", width=150)
+st.image("res/Miningful_NoBG_WhiteText.png", width=150)
 st.title("Miningful Predictive Maintenance Demo")
 
 # 8.1) Sidebar config
