@@ -6,3 +6,4 @@ matplotlib
 seaborn
 python-dotenv
 boto3
+plotly
