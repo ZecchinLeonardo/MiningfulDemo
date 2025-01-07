@@ -305,45 +305,79 @@ tab1, tab2 = st.tabs(["Predictions", "Data Exploration"])
 # =======================================================
 # TAB 1: DATA EXPLORATION
 # =======================================================
-with tab2:
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
+    """Plot distributions for the user-selected numeric columns."""
+    if not columns_to_plot:
+        st.write("No columns selected.")
+        return
+    
+    # Set up a grid of subplots depending on how many columns we have
+    num_cols = len(columns_to_plot)
+    fig, axs = plt.subplots(1, num_cols, figsize=(5*num_cols, 5))
+
+    # If there's only one column selected, axs might not be an array. Make it a list.
+    if num_cols == 1:
+        axs = [axs]
+
+    for ax, col in zip(axs, columns_to_plot):
+        if df[col].dropna().empty:
+            ax.text(0.5, 0.5, f"No data for {col}", ha='center', va='center')
+        else:
+            df[col].dropna().plot(kind='density', ax=ax)
+        ax.set_title(f"{col} Distribution")
+    st.pyplot(fig)
+
+def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
+    """Plot correlation heatmap for only the user-selected columns."""
+    if not columns_to_plot:
+        st.write("No columns selected for correlation.")
+        return
+
+    # Filter to numeric columns & user selection
+    sub_df = df[columns_to_plot].dropna(axis=0, how='any')
+    if sub_df.shape[1] < 2:
+        st.write("Not enough columns selected for correlation heatmap.")
+        return
+
+    corr = sub_df.corr()
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(corr, annot=False, cmap='coolwarm', ax=ax, cbar_kws={"shrink": 0.8})
+    ax.set_title("Correlation Heatmap (Selected Columns)")
+    st.pyplot(fig)
+
+# -------------------------------------------------------
+# Inside your "Data Exploration" tab, you might do:
+# -------------------------------------------------------
+def data_exploration_tab(df_all: pd.DataFrame):
     st.subheader("Data Exploration")
 
-    # Button to generate (or hide) graphs
-    if not st.session_state.show_graphs:
-        if st.button("Generate Data Exploration Graphs"):
-            st.session_state.show_graphs = True
-            st.rerun()
-    else:
-        if st.button("Hide Data Exploration Graphs"):
-            st.session_state.show_graphs = False
-            st.rerun()
+    # 1) Identify numeric columns
+    numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
 
-    if st.session_state.show_graphs:
-        data_window = pd.DataFrame()
-        end_idx = min(st.session_state.current_index, len(df_all) - 1)
-        if len(df_all) > 0:
-            data_window = get_window_data(df_all, end_idx, data_window_size)
+    # 2) Let the user pick columns
+    selected_columns = st.multiselect(
+        "Select columns to visualize",
+        numeric_cols,
+        default=numeric_cols[:3]  # e.g. pre-select first 3 for convenience
+    )
 
-        # 1) Full data distributions
-        st.write("### Sensor Data Distributions (Overall Dataset)")
-        if not df_all.empty:
-            plot_distributions(df_all)
-        else:
-            st.write("No data available.")
+    # 3) Distributions
+    st.write("###Distributions")
+    plot_distributions_custom(df_all, selected_columns)
 
-        # 2) Correlation heatmap (Overall)
-        st.write("### Correlation Heatmap (Overall Dataset)")
-        if not df_all.empty:
-            plot_correlation(df_all)
-        else:
-            st.write("No data available.")
+    # 4) Correlation
+    st.write("###Correlation")
+    plot_correlation_custom(df_all, selected_columns)
+    
+with tab2:
+    data_exploration_tab(df_all)
 
-        # 3) Compare window distribution vs. entire dataset
-        st.write("### Current Window vs. Overall Distribution")
-        if not data_window.empty:
-            plot_distribution_comparison(df_all, data_window)
-        else:
-            st.write("No current window data to compare.")
 
 # =======================================================
 # TAB 2: PREDICTIONS
