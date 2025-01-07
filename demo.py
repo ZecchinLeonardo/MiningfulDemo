@@ -404,3 +404,9 @@ with tab1:
         # Plot time series (actual vs predicted) for the current window
         plot_timeseries_with_prediction_interactive(data_with_preds)
 
+st.write("""
+    <script>
+        // Scroll to top of page on load
+        window.scrollTo(0, 0);
+    </script>
+""", unsafe_allow_html=True)
