@@ -26,6 +26,7 @@ s3 = boto3.client(
     aws_secret_access_key=aws_secret_access_key
 )
 
+
 # -------------------------------------------------------
 # 1) Load the entire CSV once
 # -------------------------------------------------------
@@ -239,6 +240,20 @@ def plot_timeseries_with_prediction_interactive(
 # 8) Streamlit App
 # -------------------------------------------------------
 st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
+hide_stale_and_classes = """
+<style>
+/* Hide all stale elements */
+[data-stale="true"],
+/* Hide elements with classes .st-fk or .st-fl */
+.st-fk,
+.st-fl {
+    display: none !important;
+}
+</style>
+"""
+
+st.markdown(hide_stale_and_classes, unsafe_allow_html=True)
+
 st.image("res/Miningful_NoBG_WhiteText.png", width=150)
 st.title("Miningful Predictive Maintenance Demo")
 
@@ -368,11 +383,11 @@ def data_exploration_tab(df_all: pd.DataFrame):
     )
 
     # 3) Distributions
-    st.write("###Distributions")
+    st.write("### Distributions")
     plot_distributions_custom(df_all, selected_columns)
 
     # 4) Correlation
-    st.write("###Correlation")
+    st.write("### Correlation")
     plot_correlation_custom(df_all, selected_columns)
     
 with tab2:
@@ -438,9 +453,9 @@ with tab1:
         # Plot time series (actual vs predicted) for the current window
         plot_timeseries_with_prediction_interactive(data_with_preds)
 
-st.write("""
-    <script>
-        // Scroll to top of page on load
-        window.scrollTo(0, 0);
-    </script>
-""", unsafe_allow_html=True)
+# st.write("""
+#     <script>
+#         // Scroll to top of page on load
+#         window.scrollTo(0, 0);
+#     </script>
+# """, unsafe_allow_html=True)
