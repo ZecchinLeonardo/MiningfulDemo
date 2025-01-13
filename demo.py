@@ -119,9 +119,15 @@ def plot_timeseries_with_prediction_interactive(
         x=time_col,
         y=[actual_col, predicted_col],
         labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
-        title="Actual vs. Predicted Moisture Over Time"
+        title="Actual vs. Predicted Moisture Over Time"  # Restore the title
+    )
+    # Make the chart more compact
+    fig.update_layout(
+        height=400,   # Adjust as needed for a smaller default height
+        margin=dict(l=20, r=20, t=50, b=20)  # Tweak margins as desired
     )
     st.plotly_chart(fig, use_container_width=True)
+
 
 ###############################################################################
 # Data Exploration / Visualization
@@ -356,30 +362,33 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
 ###############################################################################
 @fragment(run_every=10)
 def predictions_tab_streaming(df_all: pd.DataFrame):
-    """
-    This fragment re-runs every 10 seconds.
-    We only increment st.session_state.current_index and do "streaming logic" here.
-    """
-
-    st.subheader("Predictions - Streaming (every 10s)")
-
+    """This fragment re-runs every 10 seconds for streaming predictions."""
+    
     # If we hit end of dataset, auto-stop
     if st.session_state.current_index >= len(df_all):
         st.warning("Reached the end of the dataset.")
         st.session_state.streaming = False  # Turn off streaming
         return
 
+    # Gather current data window and make predictions
     data_window_size = st.session_state.get("demo_window_size", 3)
-
     data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
     model = st.session_state.get("model", None)
     data_with_preds = predict(model, data_window)
 
-    st.write("Last few predictions in the current window:")
-    st.dataframe(data_with_preds.tail(5))
-    plot_timeseries_with_prediction_interactive(data_with_preds)
+    # Immediately create two columns at the top
+    col_left, col_right = st.columns([1, 2])  # Adjust ratio as needed
 
-    # Advance index by 1 each partial re-run
+    # Left column: show heading and last few predictions
+    with col_left:
+        st.markdown("#### Predictions - Streaming (every 10s)")
+        st.dataframe(data_with_preds.tail(5), use_container_width=True)
+
+    # Right column: show the chart with a restored Plotly title
+    with col_right:
+        plot_timeseries_with_prediction_interactive(data_with_preds)
+
+    # Increment index by 1 each partial re-run
     st.session_state.current_index += 1
 
 ###############################################################################
@@ -387,26 +396,26 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
 ###############################################################################
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
-    """
-    This fragment is never auto re-run. It just shows "Paused" state
-    whenever streaming=False. That means st.session_state.current_index doesn't change.
-    """
-
-    st.subheader("Predictions - Paused")
-
+    """Never auto re-run, just shows 'Paused' state."""
+    
     end_idx = min(st.session_state.current_index, len(df_all) - 1)
     model = st.session_state.get("model", None)
     data_window_size = st.session_state.get("demo_window_size", 3)
     data_window = get_window_data(df_all, end_idx, data_window_size)
     data_with_preds = predict(model, data_window)
 
-    st.write("Last few predictions in the current window:")
-    if not data_with_preds.empty:
-        st.dataframe(data_with_preds.tail(5))
-    else:
-        st.write("No data available in the current window.")
+    col_left, col_right = st.columns([1, 2])
 
-    plot_timeseries_with_prediction_interactive(data_with_preds)
+    with col_left:
+        st.markdown("#### Predictions - Paused")
+        if not data_with_preds.empty:
+            st.dataframe(data_with_preds.tail(5), use_container_width=True)
+        else:
+            st.write("No data available in the current window.")
+
+    with col_right:
+        plot_timeseries_with_prediction_interactive(data_with_preds)
+
 
 ###############################################################################
 # "Unified" UI to switch between fragments
@@ -444,22 +453,34 @@ def predictions_tab_controller(df_all: pd.DataFrame):
 def main():
     st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
 
-    # Hide some stale elements
+    # -- Reduce extra spacing with custom CSS --
     st.markdown(
-        """
-        <style>
-        [data-stale="true"],
-        .st-fk,
-        .st-fl {
-            display: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
+    """
+    <style>
+    /* Reduce top padding a bit (not completely), so the logo is still visible */
+
+    h1, h2, h3, h4, h5, h6 {
+        margin-top: 0.5rem;
+        margin-bottom: 0.5rem;
+    }
+    /* Make st.metric more compact */
+    .stMetric {
+        padding: 0rem;
+        margin: 0rem;
+    }
+    /* Optionally reduce spacing around Plotly charts */
+    .element-container .stPlotlyChart {
+        margin: 0rem 0rem;
+        padding: 0rem 0rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
     )
 
-    st.image("res/Miningful_NoBG_WhiteText.png", width=150)
-    st.title("Miningful Predictive Maintenance Demo")
+    # Optionally shrink or remove the logo
+    st.image("res/Miningful_NoBG_WhiteText.png", width=120)
+    st.markdown("### Miningful Predictive Maintenance Demo")  # smaller than st.title
 
     # Sidebar config
     st.sidebar.header("⚙️ Configuration")
@@ -480,9 +501,10 @@ def main():
             st.session_state.model = model
             st.session_state.model_mse = mse
 
+    # Instead of separate st.success and st.metric, combine them in one line:
     if st.session_state.model is not None:
-        st.success("Model training complete!")
-        st.metric("Mean Squared Error", round(st.session_state.model_mse, 2))
+        mse_value = round(st.session_state.model_mse, 2)
+        st.markdown(f"<span style='color:green;font-weight:bold;'>Model training complete!</span> MSE: **{mse_value}**", unsafe_allow_html=True)
     else:
         st.warning("Not enough data to train the model.")
 
