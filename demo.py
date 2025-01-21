@@ -119,15 +119,13 @@ def plot_timeseries_with_prediction_interactive(
         x=time_col,
         y=[actual_col, predicted_col],
         labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
-        title="Actual vs. Predicted Moisture Over Time"  # Restore the title
+        title="Actual vs. Predicted Moisture Over Time"
     )
-    # Make the chart more compact
     fig.update_layout(
-        height=400,   # Adjust as needed for a smaller default height
-        margin=dict(l=20, r=20, t=50, b=20)  # Tweak margins as desired
+        height=400,
+        margin=dict(l=20, r=20, t=50, b=20)
     )
     st.plotly_chart(fig, use_container_width=True)
-
 
 ###############################################################################
 # Data Exploration / Visualization
@@ -190,7 +188,7 @@ def plot_distribution_comparison(df_all: pd.DataFrame, df_window: pd.DataFrame):
     st.pyplot(fig)
 
 ###############################################################################
-# Enhanced Anomaly Detection - More User Friendly
+# Enhanced Anomaly Detection
 ###############################################################################
 
 def detect_anomalies_zscore(df: pd.DataFrame, columns: list, threshold: float = 3.0):
@@ -225,7 +223,6 @@ def plot_anomalies_time_series(df: pd.DataFrame, x_col: str, y_col: str, anomaly
         st.write(f"Cannot plot anomalies for {y_col}. Missing columns.")
         return
 
-    # We'll create a color label for anomalies
     df_plot = df.copy()
     df_plot['Anomaly'] = df_plot[anomaly_col].replace({True: "Anomaly", False: "Normal"})
     
@@ -239,9 +236,10 @@ def plot_anomalies_time_series(df: pd.DataFrame, x_col: str, y_col: str, anomaly
     st.plotly_chart(fig, use_container_width=True)
 
 ###############################################################################
-# Feature Importance / Key Variable Contribution
+# Feature Importance Utilities
 ###############################################################################
 def plot_feature_importances(model, feature_names):
+    """Simple bar chart of feature importances."""
     if not hasattr(model, 'feature_importances_'):
         st.write("Model does not have feature importances.")
         return
@@ -257,18 +255,50 @@ def plot_feature_importances(model, feature_names):
     ax.set_title("Feature Importances (RandomForest)")
     st.pyplot(fig)
 
+def get_top_n_features(model, feature_names, n=8):
+    """Returns the top n features based on feature_importances_, sorted descending."""
+    if not hasattr(model, 'feature_importances_'):
+        return []
+    importances = model.feature_importances_
+    indices_desc = np.argsort(importances)[::-1]  # descending order
+    top_indices = indices_desc[:n]
+    return [feature_names[i] for i in top_indices]
+
 ###############################################################################
-# Fragment 1: Data Exploration (Updated Anomaly Section)
+# Helper for plotting 8 separate charts
+###############################################################################
+def plot_separate_feature_charts(df: pd.DataFrame, features: list):
+    """
+    Plots each feature separately in a 4x2 grid (8 plots total).
+    """
+    # We'll place them in pairs (2 columns in each row).
+    for i in range(0, len(features), 2):
+        cols = st.columns(2)
+        for j in range(2):
+            if i + j < len(features):
+                feature = features[i + j]
+                fig = px.line(
+                    df,
+                    x='timestamp',
+                    y=feature,
+                    title=f"{feature}"
+                )
+                fig.update_layout(
+                    height=300,
+                    margin=dict(l=20, r=20, t=50, b=20)
+                )
+                cols[j].plotly_chart(fig, use_container_width=True)
+
+###############################################################################
+# Fragment 1: Data Exploration
 ###############################################################################
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     st.subheader("Data Exploration")
 
-    # We'll consider the current window as well
     end_idx = st.session_state.current_index
     data_window = get_window_data(df_all, end_idx, st.session_state.get("demo_window_size", 3))
 
-    # Let user select from a variety of analysis/plots:
     analysis_options = [
         "Distributions (Full Dataset)",
         "Correlation Heatmap (Full Dataset)",
@@ -313,14 +343,11 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     if "Anomaly Detection (Window)" in selected_analyses:
         st.write("### Anomaly Detection (Current Window)")
 
-        # We'll use a form so that the page doesn't refresh on every input change:
         with st.form("anomaly_form"):
             numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
 
-            # Default to some temperature columns (replace these with the actual column names you have)
             default_temp_cols = [c for c in numeric_cols if "temp_in_z0" in c or "temp_out_z0" in c]
             if not default_temp_cols:
-                # fallback if those specific columns don't exist
                 default_temp_cols = numeric_cols[:1]
 
             selected_anomaly_cols = st.multiselect(
@@ -329,17 +356,13 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
                 default=default_temp_cols
             )
             z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
-
-            # Only run detection & plotting after user clicks
             update_button = st.form_submit_button("Update Anomalies")
 
-        # If user clicked update, run detection and show results
         if update_button and selected_anomaly_cols:
             anomalies_df = detect_anomalies_zscore(data_window, selected_anomaly_cols, threshold=z_threshold)
             anomaly_rate = anomalies_df['is_anomaly'].mean()
             st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
 
-            # Show only anomalous rows (up to 20)
             anomaly_rows = anomalies_df[anomalies_df['is_anomaly'] == True]
             if not anomaly_rows.empty:
                 st.write("**Anomalous rows (up to 20 displayed)**:")
@@ -348,7 +371,6 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
                 st.write("No anomalies found with current threshold and columns.")
 
             st.write("**Time-Series Plots**:")
-            # Plot each selected column with anomalies
             for col in selected_anomaly_cols:
                 plot_anomalies_time_series(anomalies_df, x_col='timestamp', y_col=col)
 
@@ -358,46 +380,36 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         plot_feature_importances(model, feature_columns)
 
 ###############################################################################
-# Fragment 2a: "Streaming" version => run_every=10
+# Fragment 2a: "Streaming" Predictions => run_every=10
 ###############################################################################
 @fragment(run_every=10)
 def predictions_tab_streaming(df_all: pd.DataFrame):
-    """This fragment re-runs every 10 seconds for streaming predictions."""
-    
-    # If we hit end of dataset, auto-stop
     if st.session_state.current_index >= len(df_all):
         st.warning("Reached the end of the dataset.")
-        st.session_state.streaming = False  # Turn off streaming
+        st.session_state.streaming = False
         return
 
-    # Gather current data window and make predictions
     data_window_size = st.session_state.get("demo_window_size", 3)
     data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
     model = st.session_state.get("model", None)
     data_with_preds = predict(model, data_window)
 
-    # Immediately create two columns at the top
-    col_left, col_right = st.columns([1, 2])  # Adjust ratio as needed
+    col_left, col_right = st.columns([1, 2])
 
-    # Left column: show heading and last few predictions
     with col_left:
         st.markdown("#### Predictions - Streaming (every 10s)")
         st.dataframe(data_with_preds.tail(5), use_container_width=True)
 
-    # Right column: show the chart with a restored Plotly title
     with col_right:
         plot_timeseries_with_prediction_interactive(data_with_preds)
 
-    # Increment index by 1 each partial re-run
     st.session_state.current_index += 1
 
 ###############################################################################
-# Fragment 2b: "Paused" version => run_every=None
+# Fragment 2b: "Paused" Predictions => run_every=None
 ###############################################################################
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
-    """Never auto re-run, just shows 'Paused' state."""
-    
     end_idx = min(st.session_state.current_index, len(df_all) - 1)
     model = st.session_state.get("model", None)
     data_window_size = st.session_state.get("demo_window_size", 3)
@@ -416,23 +428,74 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     with col_right:
         plot_timeseries_with_prediction_interactive(data_with_preds)
 
+###############################################################################
+# Fragment 3a: Key Variables Streaming => run_every=10
+###############################################################################
+@fragment(run_every=10)
+def key_variables_tab_streaming(df_all: pd.DataFrame):
+    """
+    Shows 8 separate line plots of the top 8 most important features
+    over the last 50 rows *relative to the current index*.
+    This re-runs every 10 seconds if streaming is ON.
+    """
+    top_features = st.session_state.get("top_features", [])
+    if not top_features:
+        st.write("No top features found. Please click 'Start Streaming' to compute.")
+        return
+
+    ### CHANGED HERE ###
+    # Get a sliding window of 50 rows ending at current_index
+    current_idx = st.session_state.current_index
+    start_idx = max(0, current_idx - 49)
+    df_last_50 = df_all.iloc[start_idx : current_idx + 1]
+    st.markdown("#### Key Variables - Streaming (sliding window of last 50 rows)")
+
+    # Plot each feature separately
+    plot_separate_feature_charts(df_last_50, top_features)
 
 ###############################################################################
-# "Unified" UI to switch between fragments
+# Fragment 3b: Key Variables Paused => run_every=None
+###############################################################################
+@fragment(run_every=None)
+def key_variables_tab_paused(df_all: pd.DataFrame):
+    """
+    Shows 8 separate line plots of the top 8 most important features
+    over the last 50 rows *relative to the current index*, but does not auto-refresh.
+    """
+    top_features = st.session_state.get("top_features", [])
+    if not top_features:
+        st.write("No top features found. Streaming not started or model unavailable.")
+        return
+
+    ### CHANGED HERE ###
+    # Same sliding window logic, but no auto increment
+    current_idx = st.session_state.current_index
+    start_idx = max(0, current_idx - 49)
+    df_last_50 = df_all.iloc[start_idx : current_idx + 1]
+
+    st.markdown("#### Key Variables - Paused (sliding window of last 50 rows)")
+    plot_separate_feature_charts(df_last_50, top_features)
+
+###############################################################################
+# Controllers
 ###############################################################################
 def predictions_tab_controller(df_all: pd.DataFrame):
     """
-    One function that shows Start/Stop buttons, then calls either
-    predictions_tab_streaming or predictions_tab_paused
-    depending on st.session_state.streaming.
+    Start/Stop streaming for predictions; calls the appropriate fragment.
+    Also triggers feature-importance calculation if not done yet.
     """
-
     st.subheader("Predictions and Real-Time Stream")
 
     col1, col2 = st.columns(2)
     with col1:
         if not st.session_state.streaming:
             if st.button("▶️ Start Streaming"):
+                # When streaming starts, compute top 8 features if not already computed
+                if "top_features" not in st.session_state:
+                    model = st.session_state.get("model", None)
+                    if model is not None:
+                        feature_cols = st.session_state.get("feature_columns", [])
+                        st.session_state.top_features = get_top_n_features(model, feature_cols, n=8)
                 st.session_state.streaming = True
                 st.rerun()
         else:
@@ -447,6 +510,20 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
 
+def key_variables_tab_controller(df_all: pd.DataFrame):
+    """
+    Shows the top-8-features plots in either streaming or paused mode,
+    updating at the same frequency as predictions, but always for the last 50 rows
+    up to the current index.
+    """
+    st.subheader("Key Variables (Top 8 Features)")
+    if st.session_state.streaming:
+        st.write("**Streaming is ON.**")
+        key_variables_tab_streaming(df_all)
+    else:
+        st.write("**Streaming is paused.**")
+        key_variables_tab_paused(df_all)
+
 ###############################################################################
 # Main App
 ###############################################################################
@@ -455,37 +532,32 @@ def main():
 
     # -- Reduce extra spacing with custom CSS --
     st.markdown(
-    """
-    <style>
-    /* Reduce top padding a bit (not completely), so the logo is still visible */
-
-    h1, h2, h3, h4, h5, h6 {
-        margin-top: 0.5rem;
-        margin-bottom: 0.5rem;
-    }
-    /* Make st.metric more compact */
-    .stMetric {
-        padding: 0rem;
-        margin: 0rem;
-    }
-    /* Optionally reduce spacing around Plotly charts */
-    .element-container .stPlotlyChart {
-        margin: 0rem 0rem;
-        padding: 0rem 0rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
+        """
+        <style>
+        h1, h2, h3, h4, h5, h6 {
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .stMetric {
+            padding: 0rem;
+            margin: 0rem;
+        }
+        .element-container .stPlotlyChart {
+            margin: 0rem 0rem;
+            padding: 0rem 0rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
     )
 
-    # Optionally shrink or remove the logo
     st.image("res/Miningful_NoBG_WhiteText.png", width=120)
-    st.markdown("### Miningful Predictive Maintenance Demo")  # smaller than st.title
+    st.markdown("### Miningful Predictive Maintenance Demo")
 
     # Sidebar config
     st.sidebar.header("⚙️ Configuration")
     demo_window_size = st.sidebar.slider("Data Window Size (days):", 3, 7, 3)
-    st.sidebar.write("Polling interval: 10s")  # fixed
+    st.sidebar.write("Polling interval: 10s (fixed)")
 
     st.session_state.demo_window_size = demo_window_size
 
@@ -501,14 +573,16 @@ def main():
             st.session_state.model = model
             st.session_state.model_mse = mse
 
-    # Instead of separate st.success and st.metric, combine them in one line:
     if st.session_state.model is not None:
         mse_value = round(st.session_state.model_mse, 2)
-        st.markdown(f"<span style='color:green;font-weight:bold;'>Model training complete!</span> MSE: **{mse_value}**", unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='color:green;font-weight:bold;'>Model training complete!</span> MSE: **{mse_value}**",
+            unsafe_allow_html=True
+        )
     else:
         st.warning("Not enough data to train the model.")
 
-    # On first load, define initial window index
+    # Set initial window/index if not done yet
     if "initial_window_set" not in st.session_state:
         dataset_start = df_all['timestamp'].min()
         initial_end_time = dataset_start + timedelta(days=demo_window_size)
@@ -516,11 +590,11 @@ def main():
         st.session_state.current_index = idx
         st.session_state.initial_window_set = True
 
-    # Ensure we have a streaming flag
+    # Ensure streaming state
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
 
-    # Feature columns (same as used in model training)
+    # Store feature columns for top-features logic
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
@@ -530,15 +604,19 @@ def main():
         'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
         'temp_in_z9', 'temp_out_z9'
     ]
+    st.session_state.feature_columns = feature_columns
 
-    # Tabs: Predictions vs. Data Exploration
-    tab1, tab2 = st.tabs(["Predictions", "Data Exploration"])
+    # Tabs: Predictions, Data Exploration, Key Variables
+    tab1, tab2, tab3 = st.tabs(["Predictions", "Data Exploration", "Key Variables"])
 
     with tab1:
         predictions_tab_controller(df_all)
 
     with tab2:
         data_exploration_tab(df_all, st.session_state.model, feature_columns)
+
+    with tab3:
+        key_variables_tab_controller(df_all)
 
 if __name__ == "__main__":
     main()
