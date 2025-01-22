@@ -665,6 +665,114 @@ def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
         title="Key Variables"
     )
     st.plotly_chart(fig, use_container_width=True)
+    
+
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+def compute_performance_metrics(df: pd.DataFrame, 
+                                target_col: str = "moisture_in_z0", 
+                                pred_col: str = "predicted_moisture") -> dict:
+    """
+    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col (non-null).
+    Return a dict with {mse, mae, r2}.
+    """
+    df_valid = df.dropna(subset=[target_col, pred_col])
+    if df_valid.empty:
+        return {"mse": None, "mae": None, "r2": None}
+    
+    y_true = df_valid[target_col]
+    y_pred = df_valid[pred_col]
+    
+    mse_val = mean_squared_error(y_true, y_pred)
+    mae_val = mean_absolute_error(y_true, y_pred)
+    r2_val  = r2_score(y_true, y_pred)
+    return {"mse": mse_val, "mae": mae_val, "r2": r2_val}
+
+@fragment(run_every=None)
+def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
+    st.subheader("Model Performance")
+
+    if model is None:
+        st.warning("No trained model available. Please train the model first.")
+        return
+    
+    # 1) Full-dataset prediction
+    # ----------------------------------
+    df_all_preds = predict(model, df_all)  # uses your existing function
+    # We'll rename the column to avoid overwriting anything
+    df_all_preds.rename(
+        columns={"predicted_moisture": "predicted_moisture_full"}, 
+        inplace=True
+    )
+
+    full_metrics = compute_performance_metrics(
+        df_all_preds, 
+        target_col="moisture_in_z0", 
+        pred_col="predicted_moisture_full"
+    )
+
+    # 2) Current window predictions
+    # ----------------------------------
+    end_idx = min(st.session_state.current_index, len(df_all) - 1)
+    data_window = get_window_data(df_all, end_idx, st.session_state.get("demo_window_size", 3))
+    df_window_preds = predict(model, data_window)  # predicted_moisture column
+    window_metrics = compute_performance_metrics(
+        df_window_preds, 
+        target_col="moisture_in_z0", 
+        pred_col="predicted_moisture"
+    )
+
+    # 3) Display metrics
+    # ----------------------------------
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Full Dataset Metrics")
+        if full_metrics["mse"] is None:
+            st.write("No valid rows for full-dataset metric computation.")
+        else:
+            st.metric(label="MSE (Full)", value=f"{full_metrics['mse']:.4f}")
+            st.metric(label="MAE (Full)", value=f"{full_metrics['mae']:.4f}")
+            st.metric(label="R² (Full)", value=f"{full_metrics['r2']:.4f}")
+
+    with col2:
+        st.markdown("### Current Window Metrics")
+        if window_metrics["mse"] is None:
+            st.write("No valid rows in the current window for metric computation.")
+        else:
+            st.metric(label="MSE (Window)", value=f"{window_metrics['mse']:.4f}")
+            st.metric(label="MAE (Window)", value=f"{window_metrics['mae']:.4f}")
+            st.metric(label="R² (Window)", value=f"{window_metrics['r2']:.4f}")
+
+    # 4) Optional: Plot actual vs. predicted lines
+    # ----------------------------------
+    st.markdown("### Full Dataset: Actual vs. Predicted")
+    if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
+        st.write("No valid predictions for full dataset.")
+    else:
+        fig_full = px.line(
+            df_all_preds.dropna(subset=["predicted_moisture_full", "moisture_in_z0"]),
+            x="timestamp",
+            y=["moisture_in_z0", "predicted_moisture_full"],
+            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
+            title="Full Dataset: Actual vs. Predicted Moisture"
+        )
+        fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(fig_full, use_container_width=True)
+
+    st.markdown("### Current Window: Actual vs. Predicted")
+    if df_window_preds["predicted_moisture"].dropna().empty:
+        st.write("No valid predictions for the current window.")
+    else:
+        fig_window = px.line(
+            df_window_preds.dropna(subset=["predicted_moisture", "moisture_in_z0"]),
+            x="timestamp",
+            y=["moisture_in_z0", "predicted_moisture"],
+            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
+            title="Current Window: Actual vs. Predicted Moisture"
+        )
+        fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(fig_window, use_container_width=True)
+
 
 
 ###############################################################################
@@ -750,16 +858,21 @@ def main():
     st.session_state.feature_columns = feature_columns
 
     # Tabs: Predictions, Data Exploration, Key Variables
-    tab1, tab2, tab3 = st.tabs(["Predictions", "Data Exploration", "Key Variables"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Predictions", 
+        "Data Exploration", 
+        "Key Variables",
+        "Model Performance"
+    ])
 
     with tab1:
         predictions_tab_controller(df_all)
-
     with tab2:
         data_exploration_tab(df_all, st.session_state.model, feature_columns)
-
     with tab3:
         key_variables_tab_controller(df_all)
+    with tab4:
+        model_performance_tab(df_all, st.session_state.model, feature_columns)
 
 if __name__ == "__main__":
     main()
