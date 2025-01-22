@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit.runtime.fragment import fragment  # For partial re-runs
+from streamlit.runtime.fragment import fragment
 import pandas as pd
 import numpy as np
 import time
@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
 
 ###############################################################################
-# AWS Credentials and S3 client
+# 1) AWS Credentials and S3 client
 ###############################################################################
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -28,7 +28,7 @@ s3 = boto3.client(
 )
 
 ###############################################################################
-# Data loading and model training
+# 2) Data Loading and Model Training
 ###############################################################################
 def load_data_remote():
     obj = s3.get_object(Bucket='miningfuldemo', Key='datirs_SK.csv')
@@ -68,9 +68,10 @@ def train_model(df: pd.DataFrame):
     return model, mse
 
 ###############################################################################
-# Prediction & Plotting Utilities
+# 3) Prediction & Plotting Utilities
 ###############################################################################
 def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
+    """Use the model to predict 'predicted_moisture' from feature columns."""
     if model is None or data_window.empty:
         return data_window
 
@@ -97,6 +98,7 @@ def find_index_for_time(df: pd.DataFrame, t: pd.Timestamp) -> int:
     return matching[0] if len(matching) > 0 else len(df) - 1
 
 def get_window_data(df, end_index: int, days: int):
+    """For Predictions tab: slice last 'days' from end_index."""
     if end_index < 0 or end_index >= len(df):
         return pd.DataFrame()
     end_time = df.loc[end_index, 'timestamp']
@@ -109,6 +111,7 @@ def plot_timeseries_with_prediction_interactive(
     actual_col='moisture_in_z0',
     predicted_col='predicted_moisture'
 ):
+    """Plot actual vs. predicted moisture as lines in Plotly."""
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
@@ -128,7 +131,7 @@ def plot_timeseries_with_prediction_interactive(
     st.plotly_chart(fig, use_container_width=True)
 
 ###############################################################################
-# Data Exploration / Visualization
+# 4) Data Exploration & Visualization
 ###############################################################################
 import matplotlib
 matplotlib.use("Agg")
@@ -170,8 +173,7 @@ def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
 
 def plot_distribution_comparison(df_all: pd.DataFrame, df_window: pd.DataFrame):
     """
-    Plots density comparison of the current window vs. the entire dataset
-    for a few selected columns.
+    Compare distribution of some columns in the entire dataset vs the window subset.
     """
     columns_to_plot = ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
     
@@ -188,58 +190,36 @@ def plot_distribution_comparison(df_all: pd.DataFrame, df_window: pd.DataFrame):
     st.pyplot(fig)
 
 ###############################################################################
-# Enhanced Anomaly Detection
+# 5) Anomaly Detection: Z-Score on the Top 8 Features
 ###############################################################################
-
-def detect_anomalies_zscore(df: pd.DataFrame, columns: list, threshold: float = 3.0):
+def detect_anomalies_for_features(df: pd.DataFrame, features: list, z_threshold=3.0) -> pd.DataFrame:
     """
-    Detect anomalies in specified columns using a simple Z-score method.
-    Adds per-column anomaly flags (col_anomaly) and an 'is_anomaly' column.
+    Returns a copy of df with:
+      - <feature>_anomaly for each of the given `features`
+      - any_anomaly = True if any of those features is anomalous in that row
     """
-    df = df.copy()
-    for col in columns:
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-            col_mean = df[col].mean()
-            col_std = df[col].std()
-            if col_std == 0:
-                df[f"{col}_anomaly"] = False
+    df_out = df.copy()
+    for feat in features:
+        if feat in df_out.columns and pd.api.types.is_numeric_dtype(df_out[feat]):
+            mean_ = df_out[feat].mean()
+            std_ = df_out[feat].std()
+            if std_ == 0:
+                df_out[f"{feat}_anomaly"] = False
             else:
-                zscores = (df[col] - col_mean) / col_std
-                df[f"{col}_anomaly"] = np.abs(zscores) > threshold
+                zscores = (df_out[feat] - mean_) / std_
+                df_out[f"{feat}_anomaly"] = (zscores.abs() > z_threshold)
     
-    # For a simple aggregated flag
-    anomaly_cols = [c for c in df.columns if c.endswith("_anomaly")]
+    anomaly_cols = [f"{f}_anomaly" for f in features if f"{f}_anomaly" in df_out.columns]
     if anomaly_cols:
-        df['is_anomaly'] = df[anomaly_cols].any(axis=1)
+        df_out["any_anomaly"] = df_out[anomaly_cols].any(axis=1)
     else:
-        df['is_anomaly'] = False
-    return df
-
-def plot_anomalies_time_series(df: pd.DataFrame, x_col: str, y_col: str, anomaly_col='is_anomaly'):
-    """
-    Create a scatter chart showing normal vs. anomalous points for a single column.
-    """
-    if x_col not in df.columns or y_col not in df.columns:
-        st.write(f"Cannot plot anomalies for {y_col}. Missing columns.")
-        return
-
-    df_plot = df.copy()
-    df_plot['Anomaly'] = df_plot[anomaly_col].replace({True: "Anomaly", False: "Normal"})
-    
-    fig = px.scatter(
-        df_plot, 
-        x=x_col, 
-        y=y_col, 
-        color='Anomaly',
-        title=f"Anomaly Visualization: {y_col} vs. {x_col}"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        df_out["any_anomaly"] = False
+    return df_out
 
 ###############################################################################
-# Feature Importance Utilities
+# 6) Feature Importances
 ###############################################################################
 def plot_feature_importances(model, feature_names):
-    """Simple bar chart of feature importances."""
     if not hasattr(model, 'feature_importances_'):
         st.write("Model does not have feature importances.")
         return
@@ -256,41 +236,95 @@ def plot_feature_importances(model, feature_names):
     st.pyplot(fig)
 
 def get_top_n_features(model, feature_names, n=8):
-    """Returns the top n features based on feature_importances_, sorted descending."""
+    """Return top-n features based on feature_importances_, descending."""
     if not hasattr(model, 'feature_importances_'):
         return []
     importances = model.feature_importances_
-    indices_desc = np.argsort(importances)[::-1]  # descending order
+    indices_desc = np.argsort(importances)[::-1]
     top_indices = indices_desc[:n]
     return [feature_names[i] for i in top_indices]
 
 ###############################################################################
-# Helper for plotting 8 separate charts
+# 7) Key Variables Plot: 2×4 subplots, sliding last 50 rows, weekend skip
 ###############################################################################
-def plot_separate_feature_charts(df: pd.DataFrame, features: list):
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+
+def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     """
-    Plots each feature separately in a 4x2 grid (8 plots total).
+    Creates a 2×4 Plotly subplot layout for the given features:
+      - Show a continuous line for all data in the slice (normal+anomaly),
+      - Overlay anomaly points in red "X",
+      - Remove weekends from the x-axis by enumerating each hour in Sat/Sun.
     """
-    # We'll place them in pairs (2 columns in each row).
-    for i in range(0, len(features), 2):
-        cols = st.columns(2)
-        for j in range(2):
-            if i + j < len(features):
-                feature = features[i + j]
-                fig = px.line(
-                    df,
-                    x='timestamp',
-                    y=feature,
-                    title=f"{feature}"
-                )
-                fig.update_layout(
-                    height=300,
-                    margin=dict(l=20, r=20, t=50, b=20)
-                )
-                cols[j].plotly_chart(fig, use_container_width=True)
+    # Convert to timezone-naive
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+
+    # Build weekend skip list
+    start_date = df["timestamp"].min().floor('D')
+    end_date = df["timestamp"].max().ceil('D')
+    all_days = pd.date_range(start=start_date, end=end_date, freq='D')
+    weekend_days = all_days[all_days.dayofweek.isin([5,6])]  # 5=Sat,6=Sun
+
+    to_skip = []
+    for d in weekend_days:
+        day_hours = pd.date_range(d, d + pd.Timedelta(hours=23), freq='H')
+        to_skip.extend(day_hours)
+
+    fig = make_subplots(rows=2, cols=4, subplot_titles=features)
+    row_col_map = [
+        (1,1), (1,2), (1,3), (1,4),
+        (2,1), (2,2), (2,3), (2,4)
+    ]
+
+    for i, feat in enumerate(features):
+        row, col = row_col_map[i]
+        anom_col = f"{feat}_anomaly"
+        mask_anom = df.get(anom_col, False)
+
+        # A) One continuous line for the entire slice
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df[feat],
+                mode="lines",
+                name=f"{feat} (all)"
+            ),
+            row=row, col=col
+        )
+
+        # B) Anomaly points only
+        df_anom = df[mask_anom]
+        fig.add_trace(
+            go.Scatter(
+                x=df_anom["timestamp"],
+                y=df_anom[feat],
+                mode="markers",
+                name=f"{feat} (anomaly)",
+                marker=dict(color="red", size=6, symbol="x")
+            ),
+            row=row, col=col
+        )
+
+    # Weekend skipping
+    for axis_name in fig.layout:
+        if axis_name.startswith("xaxis"):
+            fig.layout[axis_name].rangebreaks = [dict(values=to_skip)]
+            fig.layout[axis_name].type = "date"
+
+    fig.update_layout(
+        autosize=False,
+        width=1200,
+        height=400,
+        showlegend=False,
+        title_text="Key Variables (sliding last 50 rows, skip weekends, anomalies overlaid)",
+        margin=dict(l=20, r=20, t=50, b=20)
+    )
+
+    st.plotly_chart(fig, use_container_width=False)
 
 ###############################################################################
-# Fragment 1: Data Exploration
+# 8) Data Exploration Fragment
 ###############################################################################
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
@@ -312,7 +346,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         default=["Window Distribution Comparison", "Anomaly Detection (Window)", "Feature Importances"]
     )
 
-    # 1) Distributions (Full Dataset)
+    # 1) Distributions
     if "Distributions (Full Dataset)" in selected_analyses:
         numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
         chosen_dist_cols = st.multiselect(
@@ -323,7 +357,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         st.write("### Distributions (Full Dataset)")
         plot_distributions_custom(df_all, chosen_dist_cols)
 
-    # 2) Correlation Heatmap (Full Dataset)
+    # 2) Correlation
     if "Correlation Heatmap (Full Dataset)" in selected_analyses:
         numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
         chosen_corr_cols = st.multiselect(
@@ -334,12 +368,12 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         st.write("### Correlation Heatmap")
         plot_correlation_custom(df_all, chosen_corr_cols)
 
-    # 3) Window Distribution Comparison
+    # 3) Window Dist. Compare
     if "Window Distribution Comparison" in selected_analyses:
         st.write("### Window Distribution Comparison")
         plot_distribution_comparison(df_all, data_window)
 
-    # 4) Anomaly Detection (Window)
+    # 4) Anomaly Detection
     if "Anomaly Detection (Window)" in selected_analyses:
         st.write("### Anomaly Detection (Current Window)")
 
@@ -359,20 +393,18 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
             update_button = st.form_submit_button("Update Anomalies")
 
         if update_button and selected_anomaly_cols:
-            anomalies_df = detect_anomalies_zscore(data_window, selected_anomaly_cols, threshold=z_threshold)
-            anomaly_rate = anomalies_df['is_anomaly'].mean()
+            anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
+            anomaly_rate = anomalies_df['any_anomaly'].mean()
             st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
 
-            anomaly_rows = anomalies_df[anomalies_df['is_anomaly'] == True]
+            anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
             if not anomaly_rows.empty:
                 st.write("**Anomalous rows (up to 20 displayed)**:")
                 st.dataframe(anomaly_rows.head(20))
             else:
                 st.write("No anomalies found with current threshold and columns.")
 
-            st.write("**Time-Series Plots**:")
-            for col in selected_anomaly_cols:
-                plot_anomalies_time_series(anomalies_df, x_col='timestamp', y_col=col)
+            # (Optional) Plot single-col anomalies
 
     # 5) Feature Importances
     if "Feature Importances" in selected_analyses and model is not None:
@@ -380,117 +412,145 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         plot_feature_importances(model, feature_columns)
 
 ###############################################################################
-# Fragment 2a: "Streaming" Predictions => run_every=10
+# 9) Predictions Tab (Streaming & Paused)
 ###############################################################################
 @fragment(run_every=10)
 def predictions_tab_streaming(df_all: pd.DataFrame):
+    """Re-runs every 10 seconds, shows last 5 rows with anomaly highlighting."""
     if st.session_state.current_index >= len(df_all):
         st.warning("Reached the end of the dataset.")
         st.session_state.streaming = False
         return
 
+    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
     data_window_size = st.session_state.get("demo_window_size", 3)
     data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
     model = st.session_state.get("model", None)
     data_with_preds = predict(model, data_window)
 
-    col_left, col_right = st.columns([1, 2])
+    # Detect anomalies for top 8 only
+    top_features = st.session_state.get("top_features", [])
+    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
+    st.session_state["df_main_anomalies"] = df_ana
 
+    # Highlight row if any_anomaly == True
+    def highlight_anomaly_row(row):
+        if row.get("any_anomaly", False):
+            return ["background-color: yellow"] * len(row)
+        else:
+            return ["" for _ in row]
+
+    last_5 = df_ana.tail(5)
+    df_styled = last_5.style.apply(highlight_anomaly_row, axis=1)
+    
+
+    col_left, col_right = st.columns([1,2])
     with col_left:
         st.markdown("#### Predictions - Streaming (every 10s)")
-        st.dataframe(data_with_preds.tail(5), use_container_width=True)
+        st.write(df_styled)
+
+        # Show which top-8 columns are anomalous for these rows
+        anomaly_rows = last_5[last_5["any_anomaly"] == True]
+        if not anomaly_rows.empty:
+            st.write("**Anomaly columns (within top 8)** for these rows:")
+            for idx, row in anomaly_rows.iterrows():
+                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+                if anom_cols:
+                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
+        else:
+            st.write("No anomalies in last 5 rows (top 8 features).")
 
     with col_right:
-        plot_timeseries_with_prediction_interactive(data_with_preds)
+        plot_timeseries_with_prediction_interactive(df_ana)
 
+    # Advance index by 1
     st.session_state.current_index += 1
 
-###############################################################################
-# Fragment 2b: "Paused" Predictions => run_every=None
-###############################################################################
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
+    """Paused state: never auto re-runs."""
     end_idx = min(st.session_state.current_index, len(df_all) - 1)
     model = st.session_state.get("model", None)
     data_window_size = st.session_state.get("demo_window_size", 3)
     data_window = get_window_data(df_all, end_idx, data_window_size)
     data_with_preds = predict(model, data_window)
 
-    col_left, col_right = st.columns([1, 2])
+    top_features = st.session_state.get("top_features", [])
+    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
 
+    def highlight_anomaly_row(row):
+        if row.get("any_anomaly", False):
+            return ["background-color: yellow"] * len(row)
+        else:
+            return ["" for _ in row]
+
+    last_5 = df_ana.tail(5)
+    df_styled = last_5.style.apply(highlight_anomaly_row, axis=1)
+
+    col_left, col_right = st.columns([1,2])
     with col_left:
         st.markdown("#### Predictions - Paused")
-        if not data_with_preds.empty:
-            st.dataframe(data_with_preds.tail(5), use_container_width=True)
+        if not df_ana.empty:
+            st.write(df_styled)
+
+            # Show which top-8 columns are anomalous
+            anomaly_rows = last_5[last_5["any_anomaly"] == True]
+            if not anomaly_rows.empty:
+                st.write("**Anomaly columns (within top 8)**:")
+                for idx, row in anomaly_rows.iterrows():
+                    anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+                    if anom_cols:
+                        st.write(f"Row {idx}: {', '.join(anom_cols)}")
+            else:
+                st.write("No anomalies in last 5 rows (top 8 features).")
         else:
             st.write("No data available in the current window.")
 
     with col_right:
-        plot_timeseries_with_prediction_interactive(data_with_preds)
+        plot_timeseries_with_prediction_interactive(df_ana)
 
 ###############################################################################
-# Fragment 3a: Key Variables Streaming => run_every=10
+# 10) Key Variables Tab (Sliding Last 50 Rows)
 ###############################################################################
-@fragment(run_every=10)
-def key_variables_tab_streaming(df_all: pd.DataFrame):
-    """
-    Shows 8 separate line plots of the top 8 most important features
-    over the last 50 rows *relative to the current index*.
-    This re-runs every 10 seconds if streaming is ON.
-    """
-    top_features = st.session_state.get("top_features", [])
-    if not top_features:
-        st.write("No top features found. Please click 'Start Streaming' to compute.")
-        return
-
-    ### CHANGED HERE ###
-    # Get a sliding window of 50 rows ending at current_index
-    current_idx = st.session_state.current_index
-    start_idx = max(0, current_idx - 49)
-    df_last_50 = df_all.iloc[start_idx : current_idx + 1]
-    st.markdown("#### Key Variables - Streaming (sliding window of last 50 rows)")
-
-    # Plot each feature separately
-    plot_separate_feature_charts(df_last_50, top_features)
-
-###############################################################################
-# Fragment 3b: Key Variables Paused => run_every=None
-###############################################################################
+WINDOW_SIZE_KEYVARS = 5
 @fragment(run_every=None)
 def key_variables_tab_paused(df_all: pd.DataFrame):
-    """
-    Shows 8 separate line plots of the top 8 most important features
-    over the last 50 rows *relative to the current index*, but does not auto-refresh.
-    """
+    """Pauses at the current_index, shows a 50-row window using shared anomaly DataFrame."""
+    st.write("### Key Variables - Paused (Using Shared Anomalies)")
+
+    if "df_main_anomalies" not in st.session_state:
+        st.warning("No main anomaly data in session_state. Please run Predictions tab first.")
+        return
+    
+    df_main_ana = st.session_state["df_main_anomalies"]
     top_features = st.session_state.get("top_features", [])
-    if not top_features:
-        st.write("No top features found. Streaming not started or model unavailable.")
+
+    if "current_index" not in st.session_state:
+        st.session_state.current_index = 49  # or any suitable default
+
+    current_idx = st.session_state.current_index
+    end_idx = min(current_idx, len(df_main_ana) - 1)
+    start_idx = max(0, end_idx - (WINDOW_SIZE_KEYVARS - 1))
+
+    df_window = df_main_ana.iloc[start_idx : end_idx + 1].copy()
+    if df_window.empty:
+        st.warning("No data in this 50-row window.")
         return
 
-    ### CHANGED HERE ###
-    # Same sliding window logic, but no auto increment
-    current_idx = st.session_state.current_index
-    start_idx = max(0, current_idx - 49)
-    df_last_50 = df_all.iloc[start_idx : current_idx + 1]
-
-    st.markdown("#### Key Variables - Paused (sliding window of last 50 rows)")
-    plot_separate_feature_charts(df_last_50, top_features)
+    # Reuse your existing subplot function that expects anomaly columns
+    plot_features_2x4_subplots_anomaly(df_window, top_features)
 
 ###############################################################################
-# Controllers
+# 11) Controllers
 ###############################################################################
 def predictions_tab_controller(df_all: pd.DataFrame):
-    """
-    Start/Stop streaming for predictions; calls the appropriate fragment.
-    Also triggers feature-importance calculation if not done yet.
-    """
     st.subheader("Predictions and Real-Time Stream")
 
     col1, col2 = st.columns(2)
     with col1:
         if not st.session_state.streaming:
             if st.button("▶️ Start Streaming"):
-                # When streaming starts, compute top 8 features if not already computed
+                # Compute top 8 if not done
                 if "top_features" not in st.session_state:
                     model = st.session_state.get("model", None)
                     if model is not None:
@@ -510,27 +570,110 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
 
+###############################
+# KEY VARIABLES TAB CONTROLLER
+###############################
 def key_variables_tab_controller(df_all: pd.DataFrame):
-    """
-    Shows the top-8-features plots in either streaming or paused mode,
-    updating at the same frequency as predictions, but always for the last 50 rows
-    up to the current index.
-    """
     st.subheader("Key Variables (Top 8 Features)")
     if st.session_state.streaming:
         st.write("**Streaming is ON.**")
-        key_variables_tab_streaming(df_all)
+        key_variables_tab_streaming(df_all) 
     else:
         st.write("**Streaming is paused.**")
         key_variables_tab_paused(df_all)
+        
+
+@fragment(run_every=10)
+def key_variables_tab_streaming(df_all: pd.DataFrame):
+    st.write("### Key Variables - Streaming (Using Shared Anomalies)")
+
+    if "current_index" not in st.session_state:
+        st.session_state.current_index = 49
+
+    # 1) Grab the main anomaly-labeled df from session_state
+    if "df_main_anomalies" not in st.session_state:
+        st.warning("No anomaly data found in session_state. Please run Predictions tab first.")
+        return
+
+    df_main_ana = st.session_state["df_main_anomalies"]
+    top_features = st.session_state.get("top_features", [])
+
+    # 2) Slide your window in the *already-analyzed* dataframe
+    current_idx = st.session_state.current_index
+    end_idx = min(current_idx, len(df_main_ana) - 1)
+    start_idx = max(0, end_idx - (WINDOW_SIZE_KEYVARS - 1))
+
+    df_window = df_main_ana.iloc[start_idx : end_idx + 1].copy()
+    if df_window.empty:
+        st.warning("No data in this 50-row window.")
+        return
+
+    # 3) Simply plot these anomalies (no new calls to detect_anomalies_for_features)
+    plot_features_2x4_subplots_anomaly(df_window, top_features)
+
+    # 4) Advance index
+    if current_idx < len(df_main_ana) - 1:
+        st.session_state.current_index += 1
+    else:
+        st.warning("Reached end of dataset.")
+
+
+def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    # Convert timestamp to naive (no timezone)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+
+    fig = make_subplots(rows=2, cols=4, subplot_titles=features)
+    layout_map = [(1,1),(1,2),(1,3),(1,4),
+                  (2,1),(2,2),(2,3),(2,4)]
+
+    for i, feat in enumerate(features):
+        row, col = layout_map[i]
+        anom_col = f"{feat}_anomaly"
+        mask_anom = df.get(anom_col, False)
+
+        # Main line
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df[feat],
+                mode="lines",
+                name=feat
+            ),
+            row=row, col=col
+        )
+
+        # Red "X" anomaly points
+        df_anom = df[mask_anom]
+        fig.add_trace(
+            go.Scatter(
+                x=df_anom["timestamp"],
+                y=df_anom[feat],
+                mode="markers",
+                marker=dict(color="red", size=7, symbol="x"),
+                name=f"{feat}_anomaly"
+            ),
+            row=row, col=col
+        )
+
+    fig.update_layout(
+        height=350,
+        showlegend=False,
+        margin=dict(l=20, r=20, t=40, b=20),
+        title="Key Variables"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 ###############################################################################
-# Main App
+# 12) Main App
 ###############################################################################
 def main():
     st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
 
-    # -- Reduce extra spacing with custom CSS --
+    # Minimize extra spacing with custom CSS
     st.markdown(
         """
         <style>
@@ -582,7 +725,7 @@ def main():
     else:
         st.warning("Not enough data to train the model.")
 
-    # Set initial window/index if not done yet
+    # Initialize current index if needed
     if "initial_window_set" not in st.session_state:
         dataset_start = df_all['timestamp'].min()
         initial_end_time = dataset_start + timedelta(days=demo_window_size)
@@ -590,11 +733,11 @@ def main():
         st.session_state.current_index = idx
         st.session_state.initial_window_set = True
 
-    # Ensure streaming state
+    # Streaming flag
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
 
-    # Store feature columns for top-features logic
+    # Feature columns for top-features logic
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
