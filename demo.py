@@ -255,21 +255,10 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     Creates a 2×4 Plotly subplot layout for the given features:
       - Show a continuous line for all data in the slice (normal+anomaly),
       - Overlay anomaly points in red "X",
-      - Remove weekends from the x-axis by enumerating each hour in Sat/Sun.
+      - Remove weekends from the x-axis using pattern-based rangebreaks.
     """
     # Convert to timezone-naive
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
-
-    # Build weekend skip list
-    start_date = df["timestamp"].min().floor('D')
-    end_date = df["timestamp"].max().ceil('D')
-    all_days = pd.date_range(start=start_date, end=end_date, freq='D')
-    weekend_days = all_days[all_days.dayofweek.isin([5,6])]  # 5=Sat,6=Sun
-
-    to_skip = []
-    for d in weekend_days:
-        day_hours = pd.date_range(d, d + pd.Timedelta(hours=23), freq='H')
-        to_skip.extend(day_hours)
 
     fig = make_subplots(rows=2, cols=4, subplot_titles=features)
     row_col_map = [
@@ -306,10 +295,12 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
             row=row, col=col
         )
 
-    # Weekend skipping
+    # Weekend skipping using pattern-based rangebreaks
     for axis_name in fig.layout:
         if axis_name.startswith("xaxis"):
-            fig.layout[axis_name].rangebreaks = [dict(values=to_skip)]
+            fig.layout[axis_name].rangebreaks = [
+                dict(pattern="day of week", bounds=["sat", "sun"])
+            ]
             fig.layout[axis_name].type = "date"
 
     fig.update_layout(
@@ -512,7 +503,7 @@ def predictions_tab_paused(df_all: pd.DataFrame):
 ###############################################################################
 # 10) Key Variables Tab (Sliding Last 50 Rows)
 ###############################################################################
-WINDOW_SIZE_KEYVARS = 5
+WINDOW_SIZE_KEYVARS = 50
 @fragment(run_every=None)
 def key_variables_tab_paused(df_all: pd.DataFrame):
     """Pauses at the current_index, shows a 50-row window using shared anomaly DataFrame."""
