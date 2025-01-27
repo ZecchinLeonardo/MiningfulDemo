@@ -546,6 +546,88 @@ def key_variables_tab_paused(df_all: pd.DataFrame):
 def predictions_tab_controller(df_all: pd.DataFrame):
     st.subheader("Predictions and Real-Time Stream")
 
+    # Sidebar additions for Retraining
+    st.sidebar.header("⚙️ Configuration")
+
+    # Existing slider
+    demo_window_size = st.sidebar.slider("Data Window Size (days):", 3, 7, 3)
+    st.session_state.demo_window_size = demo_window_size
+
+    # New: Retrain on Custom Window
+    st.sidebar.header("🔄 Retrain Model on Custom Window")
+    retrain_enabled = st.sidebar.checkbox("Enable Custom Training Window")
+
+    if retrain_enabled:
+        st.sidebar.write("### Select Custom Training Time Range")
+        dataset_start = st.session_state.stream_data['timestamp'].min()
+        dataset_end = st.session_state.stream_data['timestamp'].max()
+        
+        # Date and time selection widgets
+        fixed_window_start_date = st.sidebar.date_input(
+            "Start Date",
+            value=dataset_start.date(),
+            min_value=dataset_start.date(),
+            max_value=dataset_end.date()
+        )
+        fixed_window_start_time = st.sidebar.time_input(
+            "Start Time",
+            value=dataset_start.time()
+        )
+        # Slider defines the duration in days
+        retrain_duration = st.sidebar.slider(
+            "Duration (days):", 
+            min_value=1, 
+            max_value=30, 
+            value=st.session_state.demo_window_size, 
+            step=1
+        )
+        fixed_window_end_datetime = datetime.combine(
+            fixed_window_start_date, 
+            fixed_window_start_time
+        ) + timedelta(days=retrain_duration)
+        fixed_window_end_date = st.sidebar.date_input(
+            "End Date",
+            value=fixed_window_end_datetime.date(),
+            min_value=fixed_window_start_date,
+            max_value=dataset_end.date()
+        )
+        fixed_window_end_time = st.sidebar.time_input(
+            "End Time",
+            value=fixed_window_end_datetime.time()
+        )
+        
+        # Combine date and time for precise filtering
+        fixed_start_datetime = datetime.combine(fixed_window_start_date, fixed_window_start_time)
+        fixed_end_datetime = datetime.combine(fixed_window_end_date, fixed_window_end_time)
+        
+        # Ensure end is after start
+        if fixed_end_datetime <= fixed_start_datetime:
+            st.sidebar.error("End datetime must be after start datetime.")
+        
+        # Retrain button
+        if st.sidebar.button("🔄 Retrain Model"):
+            # Filter data to the selected window
+            retrain_data = df_all[
+                (df_all['timestamp'] >= fixed_start_datetime) & 
+                (df_all['timestamp'] <= fixed_end_datetime)
+            ].copy()
+            
+            if retrain_data.empty:
+                st.sidebar.error("No data available in the selected window for retraining.")
+            else:
+                # Retrain the model
+                with st.spinner("Retraining model on the selected subset..."):
+                    new_model, new_mse = train_model(retrain_data)
+                    if new_model is not None:
+                        st.session_state.model = new_model
+                        st.session_state.model_mse = new_mse
+                        st.session_state.retrained_on = (fixed_start_datetime, fixed_end_datetime)
+                        st.success(f"Model retrained on data from {fixed_start_datetime} to {fixed_end_datetime}. MSE: {new_mse:.4f}")
+                    else:
+                        st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
+    else:
+        st.sidebar.write("Polling interval: 10s (fixed)")
+
     col1, col2 = st.columns(2)
     with col1:
         if not st.session_state.streaming:
@@ -695,7 +777,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if model is None:
         st.warning("No trained model available. Please train the model first.")
         return
-    
+
     # 1) Full-dataset prediction
     # ----------------------------------
     df_all_preds = predict(model, df_all)  # uses your existing function
@@ -773,7 +855,12 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
 
-
+    # Display retraining note if applicable
+    if "retrained_on" in st.session_state:
+        retrain_start, retrain_end = st.session_state.retrained_on
+        st.markdown(
+            f"**Model was retrained on data from {retrain_start} to {retrain_end}.**"
+        )
 
 ###############################################################################
 # 12) Main App
@@ -805,19 +892,12 @@ def main():
     st.image("res/Miningful_NoBG_WhiteText.png", width=120)
     st.markdown("### Miningful Predictive Maintenance Demo")
 
-    # Sidebar config
-    st.sidebar.header("⚙️ Configuration")
-    demo_window_size = st.sidebar.slider("Data Window Size (days):", 3, 7, 3)
-    st.sidebar.write("Polling interval: 10s (fixed)")
-
-    st.session_state.demo_window_size = demo_window_size
-
-    # Load data once
+    # Sidebar config is now handled in predictions_tab_controller
+    # Initialize session state variables if not already
     if "stream_data" not in st.session_state:
         st.session_state.stream_data = load_data_remote()
     df_all = st.session_state.stream_data
 
-    # Train model once
     if "model" not in st.session_state:
         with st.spinner("Training model..."):
             model, mse = train_model(df_all)
@@ -836,6 +916,7 @@ def main():
     # Initialize current index if needed
     if "initial_window_set" not in st.session_state:
         dataset_start = df_all['timestamp'].min()
+        demo_window_size = st.session_state.get("demo_window_size", 3)
         initial_end_time = dataset_start + timedelta(days=demo_window_size)
         idx = find_index_for_time(df_all, initial_end_time)
         st.session_state.current_index = idx
@@ -857,7 +938,7 @@ def main():
     ]
     st.session_state.feature_columns = feature_columns
 
-    # Tabs: Predictions, Data Exploration, Key Variables
+    # Tabs: Predictions, Data Exploration, Key Variables, Model Performance
     tab1, tab2, tab3, tab4 = st.tabs([
         "Predictions", 
         "Data Exploration", 
