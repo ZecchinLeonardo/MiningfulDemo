@@ -7,13 +7,20 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 
 import os
 import boto3
 from io import StringIO
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+###############################################################################
+# Fixed Start Time Constant (for sliding window)
+###############################################################################
+FIXED_START_TIME = datetime(2023, 2, 17, 9, 23)  # Fixed start: Feb 17 at 11:48
 
 ###############################################################################
 # 1) AWS Credentials and S3 client
@@ -68,6 +75,25 @@ def train_model(df: pd.DataFrame):
     return model, mse
 
 ###############################################################################
+# NEW: Sliding Window Helper (Fixed Start + Evolving Offset)
+###############################################################################
+def get_sliding_window_data(df: pd.DataFrame, offset: timedelta, window_duration_hours: float) -> pd.DataFrame:
+    """
+    Returns the data between:
+      window_start = FIXED_START_TIME + offset 
+      window_end   = window_start + (window_duration_hours)
+    
+    If the timestamp column is timezone-aware, it is converted to naive.
+    """
+    window_start = FIXED_START_TIME + offset
+    window_end = window_start + timedelta(hours=window_duration_hours)
+    if pd.api.types.is_datetime64tz_dtype(df['timestamp']):
+        ts = df['timestamp'].dt.tz_convert(None)
+    else:
+        ts = df['timestamp']
+    return df[(ts >= window_start) & (ts <= window_end)]
+
+###############################################################################
 # 3) Prediction & Plotting Utilities
 ###############################################################################
 def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
@@ -92,18 +118,6 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     data_window = data_window.copy()
     data_window.loc[X.index, 'predicted_moisture'] = preds
     return data_window
-
-def find_index_for_time(df: pd.DataFrame, t: pd.Timestamp) -> int:
-    matching = df.index[df['timestamp'] >= t]
-    return matching[0] if len(matching) > 0 else len(df) - 1
-
-def get_window_data(df, end_index: int, days: int):
-    """For Predictions tab: slice last 'days' from end_index."""
-    if end_index < 0 or end_index >= len(df):
-        return pd.DataFrame()
-    end_time = df.loc[end_index, 'timestamp']
-    start_time = end_time - timedelta(days=days)
-    return df[(df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)]
 
 def plot_timeseries_with_prediction_interactive(
     df: pd.DataFrame, 
@@ -133,10 +147,6 @@ def plot_timeseries_with_prediction_interactive(
 ###############################################################################
 # 4) Data Exploration & Visualization
 ###############################################################################
-import matplotlib
-matplotlib.use("Agg")
-import seaborn as sns
-
 def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
     if not columns_to_plot:
         st.write("No columns selected.")
@@ -245,19 +255,16 @@ def get_top_n_features(model, feature_names, n=8):
     return [feature_names[i] for i in top_indices]
 
 ###############################################################################
-# 7) Key Variables Plot: 2×4 subplots, sliding last 50 rows, weekend skip
+# 7) Key Variables Plot: 2×4 subplots, weekend skip
 ###############################################################################
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
-
 def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     """
     Creates a 2×4 Plotly subplot layout for the given features:
-      - Show a continuous line for all data in the slice (normal+anomaly),
-      - Overlay anomaly points in red "X",
-      - Remove weekends from the x-axis using pattern-based rangebreaks.
+      - Shows a continuous line for all data in the slice (normal+anomaly),
+      - Overlays anomaly points in red "X",
+      - Removes weekends from the x-axis using pattern-based rangebreaks.
     """
-    # Convert to timezone-naive
+    # Convert timestamp to naive
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
 
     fig = make_subplots(rows=2, cols=4, subplot_titles=features)
@@ -271,7 +278,7 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
         anom_col = f"{feat}_anomaly"
         mask_anom = df.get(anom_col, False)
 
-        # A) One continuous line for the entire slice
+        # Continuous line (all data)
         fig.add_trace(
             go.Scatter(
                 x=df["timestamp"],
@@ -282,7 +289,7 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
             row=row, col=col
         )
 
-        # B) Anomaly points only
+        # Red "X" markers for anomalies
         df_anom = df[mask_anom]
         fig.add_trace(
             go.Scatter(
@@ -295,7 +302,7 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
             row=row, col=col
         )
 
-    # Weekend skipping using pattern-based rangebreaks
+    # Remove weekends from x-axis
     for axis_name in fig.layout:
         if axis_name.startswith("xaxis"):
             fig.layout[axis_name].rangebreaks = [
@@ -308,394 +315,13 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
         width=1200,
         height=400,
         showlegend=False,
-        title_text="Key Variables (sliding last 50 rows, skip weekends, anomalies overlaid)",
+        title_text="Key Variables (Sliding Window, Skip Weekends)",
         margin=dict(l=20, r=20, t=50, b=20)
     )
 
     st.plotly_chart(fig, use_container_width=False)
 
-###############################################################################
-# 8) Data Exploration Fragment
-###############################################################################
-@fragment
-def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
-    st.subheader("Data Exploration")
-
-    end_idx = st.session_state.current_index
-    data_window = get_window_data(df_all, end_idx, st.session_state.get("demo_window_size", 3))
-
-    analysis_options = [
-        "Distributions (Full Dataset)",
-        "Correlation Heatmap (Full Dataset)",
-        "Window Distribution Comparison",
-        "Anomaly Detection (Window)",
-        "Feature Importances"
-    ]
-    selected_analyses = st.multiselect(
-        "Select Analyses to Display",
-        analysis_options,
-        default=["Window Distribution Comparison", "Anomaly Detection (Window)", "Feature Importances"]
-    )
-
-    # 1) Distributions
-    if "Distributions (Full Dataset)" in selected_analyses:
-        numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-        chosen_dist_cols = st.multiselect(
-            "Choose columns for distribution plots (Full Dataset)",
-            numeric_cols,
-            default=numeric_cols[:3] if len(numeric_cols) >= 3 else numeric_cols
-        )
-        st.write("### Distributions (Full Dataset)")
-        plot_distributions_custom(df_all, chosen_dist_cols)
-
-    # 2) Correlation
-    if "Correlation Heatmap (Full Dataset)" in selected_analyses:
-        numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-        chosen_corr_cols = st.multiselect(
-            "Choose columns for correlation heatmap",
-            numeric_cols,
-            default=numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols
-        )
-        st.write("### Correlation Heatmap")
-        plot_correlation_custom(df_all, chosen_corr_cols)
-
-    # 3) Window Dist. Compare
-    if "Window Distribution Comparison" in selected_analyses:
-        st.write("### Window Distribution Comparison")
-        plot_distribution_comparison(df_all, data_window)
-
-    # 4) Anomaly Detection
-    if "Anomaly Detection (Window)" in selected_analyses:
-        st.write("### Anomaly Detection (Current Window)")
-
-        with st.form("anomaly_form"):
-            numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
-
-            default_temp_cols = [c for c in numeric_cols if "temp_in_z0" in c or "temp_out_z0" in c]
-            if not default_temp_cols:
-                default_temp_cols = numeric_cols[:1]
-
-            selected_anomaly_cols = st.multiselect(
-                "Columns to analyze for anomalies (Z-score):",
-                numeric_cols,
-                default=default_temp_cols
-            )
-            z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
-            update_button = st.form_submit_button("Update Anomalies")
-
-        if update_button and selected_anomaly_cols:
-            anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
-            anomaly_rate = anomalies_df['any_anomaly'].mean()
-            st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
-
-            anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
-            if not anomaly_rows.empty:
-                st.write("**Anomalous rows (up to 20 displayed)**:")
-                st.dataframe(anomaly_rows.head(20))
-            else:
-                st.write("No anomalies found with current threshold and columns.")
-
-            # (Optional) Plot single-col anomalies
-
-    # 5) Feature Importances
-    if "Feature Importances" in selected_analyses and model is not None:
-        st.write("### Feature Importances (Model)")
-        plot_feature_importances(model, feature_columns)
-
-###############################################################################
-# 9) Predictions Tab (Streaming & Paused)
-###############################################################################
-@fragment(run_every=10)
-def predictions_tab_streaming(df_all: pd.DataFrame):
-    """Re-runs every 10 seconds, shows last 5 rows with anomaly highlighting."""
-    if st.session_state.current_index >= len(df_all):
-        st.warning("Reached the end of the dataset.")
-        st.session_state.streaming = False
-        return
-
-    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
-    data_window_size = st.session_state.get("demo_window_size", 3)
-    data_window = get_window_data(df_all, st.session_state.current_index, data_window_size)
-    model = st.session_state.get("model", None)
-    data_with_preds = predict(model, data_window)
-
-    # Detect anomalies for top 8 only
-    top_features = st.session_state.get("top_features", [])
-    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
-    st.session_state["df_main_anomalies"] = df_ana
-
-    # Highlight row if any_anomaly == True
-    def highlight_anomaly_row(row):
-        if row.get("any_anomaly", False):
-            return ["background-color: yellow"] * len(row)
-        else:
-            return ["" for _ in row]
-
-    last_5 = df_ana.tail(5)
-    df_styled = last_5.style.apply(highlight_anomaly_row, axis=1)
-    
-
-    col_left, col_right = st.columns([1,2])
-    with col_left:
-        st.markdown("#### Predictions - Streaming (every 10s)")
-        st.write(df_styled)
-
-        # Show which top-8 columns are anomalous for these rows
-        anomaly_rows = last_5[last_5["any_anomaly"] == True]
-        if not anomaly_rows.empty:
-            st.write("**Anomaly columns (within top 8)** for these rows:")
-            for idx, row in anomaly_rows.iterrows():
-                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-                if anom_cols:
-                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
-        else:
-            st.write("No anomalies in last 5 rows (top 8 features).")
-
-    with col_right:
-        plot_timeseries_with_prediction_interactive(df_ana)
-
-    # Advance index by 1
-    st.session_state.current_index += 1
-
-@fragment(run_every=None)
-def predictions_tab_paused(df_all: pd.DataFrame):
-    """Paused state: never auto re-runs."""
-    end_idx = min(st.session_state.current_index, len(df_all) - 1)
-    model = st.session_state.get("model", None)
-    data_window_size = st.session_state.get("demo_window_size", 3)
-    data_window = get_window_data(df_all, end_idx, data_window_size)
-    data_with_preds = predict(model, data_window)
-
-    top_features = st.session_state.get("top_features", [])
-    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
-
-    def highlight_anomaly_row(row):
-        if row.get("any_anomaly", False):
-            return ["background-color: yellow"] * len(row)
-        else:
-            return ["" for _ in row]
-
-    last_5 = df_ana.tail(5)
-    df_styled = last_5.style.apply(highlight_anomaly_row, axis=1)
-
-    col_left, col_right = st.columns([1,2])
-    with col_left:
-        st.markdown("#### Predictions - Paused")
-        if not df_ana.empty:
-            st.write(df_styled)
-
-            # Show which top-8 columns are anomalous
-            anomaly_rows = last_5[last_5["any_anomaly"] == True]
-            if not anomaly_rows.empty:
-                st.write("**Anomaly columns (within top 8)**:")
-                for idx, row in anomaly_rows.iterrows():
-                    anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-                    if anom_cols:
-                        st.write(f"Row {idx}: {', '.join(anom_cols)}")
-            else:
-                st.write("No anomalies in last 5 rows (top 8 features).")
-        else:
-            st.write("No data available in the current window.")
-
-    with col_right:
-        plot_timeseries_with_prediction_interactive(df_ana)
-
-###############################################################################
-# 10) Key Variables Tab (Sliding Last 50 Rows)
-###############################################################################
-WINDOW_SIZE_KEYVARS = 50
-@fragment(run_every=None)
-def key_variables_tab_paused(df_all: pd.DataFrame):
-    """Pauses at the current_index, shows a 50-row window using shared anomaly DataFrame."""
-    st.write("### Key Variables - Paused (Using Shared Anomalies)")
-
-    if "df_main_anomalies" not in st.session_state:
-        st.warning("No main anomaly data in session_state. Please run Predictions tab first.")
-        return
-    
-    df_main_ana = st.session_state["df_main_anomalies"]
-    top_features = st.session_state.get("top_features", [])
-
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 49  # or any suitable default
-
-    current_idx = st.session_state.current_index
-    end_idx = min(current_idx, len(df_main_ana) - 1)
-    start_idx = max(0, end_idx - (WINDOW_SIZE_KEYVARS - 1))
-
-    df_window = df_main_ana.iloc[start_idx : end_idx + 1].copy()
-    if df_window.empty:
-        st.warning("No data in this 50-row window.")
-        return
-
-    # Reuse your existing subplot function that expects anomaly columns
-    plot_features_2x4_subplots_anomaly(df_window, top_features)
-
-###############################################################################
-# 11) Controllers
-###############################################################################
-def predictions_tab_controller(df_all: pd.DataFrame):
-    st.subheader("Predictions and Real-Time Stream")
-
-    # Sidebar additions for Retraining
-    st.sidebar.header("⚙️ Configuration")
-
-    # Existing slider
-    demo_window_size = st.sidebar.slider("Data Window Size (days):", 3, 7, 3)
-    st.session_state.demo_window_size = demo_window_size
-
-    # New: Retrain on Custom Window
-    st.sidebar.header("🔄 Retrain Model on Custom Window")
-    retrain_enabled = st.sidebar.checkbox("Enable Custom Training Window")
-
-    if retrain_enabled:
-        st.sidebar.write("### Select Custom Training Time Range")
-        dataset_start = st.session_state.stream_data['timestamp'].min()
-        dataset_end = st.session_state.stream_data['timestamp'].max()
-        
-        # Date and time selection widgets
-        fixed_window_start_date = st.sidebar.date_input(
-            "Start Date",
-            value=dataset_start.date(),
-            min_value=dataset_start.date(),
-            max_value=dataset_end.date()
-        )
-        fixed_window_start_time = st.sidebar.time_input(
-            "Start Time",
-            value=dataset_start.time()
-        )
-        # Slider defines the duration in days
-        retrain_duration = st.sidebar.slider(
-            "Duration (days):", 
-            min_value=1, 
-            max_value=30, 
-            value=st.session_state.demo_window_size, 
-            step=1
-        )
-        fixed_window_end_datetime = datetime.combine(
-            fixed_window_start_date, 
-            fixed_window_start_time
-        ) + timedelta(days=retrain_duration)
-        fixed_window_end_date = st.sidebar.date_input(
-            "End Date",
-            value=fixed_window_end_datetime.date(),
-            min_value=fixed_window_start_date,
-            max_value=dataset_end.date()
-        )
-        fixed_window_end_time = st.sidebar.time_input(
-            "End Time",
-            value=fixed_window_end_datetime.time()
-        )
-        
-        # Combine date and time for precise filtering
-        fixed_start_datetime = datetime.combine(fixed_window_start_date, fixed_window_start_time)
-        fixed_end_datetime = datetime.combine(fixed_window_end_date, fixed_window_end_time)
-        
-        # Ensure end is after start
-        if fixed_end_datetime <= fixed_start_datetime:
-            st.sidebar.error("End datetime must be after start datetime.")
-        
-        # Retrain button
-        if st.sidebar.button("🔄 Retrain Model"):
-            # Filter data to the selected window
-            retrain_data = df_all[
-                (df_all['timestamp'] >= fixed_start_datetime) & 
-                (df_all['timestamp'] <= fixed_end_datetime)
-            ].copy()
-            
-            if retrain_data.empty:
-                st.sidebar.error("No data available in the selected window for retraining.")
-            else:
-                # Retrain the model
-                with st.spinner("Retraining model on the selected subset..."):
-                    new_model, new_mse = train_model(retrain_data)
-                    if new_model is not None:
-                        st.session_state.model = new_model
-                        st.session_state.model_mse = new_mse
-                        st.session_state.retrained_on = (fixed_start_datetime, fixed_end_datetime)
-                        st.success(f"Model retrained on data from {fixed_start_datetime} to {fixed_end_datetime}. MSE: {new_mse:.4f}")
-                    else:
-                        st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
-    else:
-        st.sidebar.write("Polling interval: 10s (fixed)")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if not st.session_state.streaming:
-            if st.button("▶️ Start Streaming"):
-                # Compute top 8 if not done
-                if "top_features" not in st.session_state:
-                    model = st.session_state.get("model", None)
-                    if model is not None:
-                        feature_cols = st.session_state.get("feature_columns", [])
-                        st.session_state.top_features = get_top_n_features(model, feature_cols, n=8)
-                st.session_state.streaming = True
-                st.rerun()
-        else:
-            if st.button("🛑 Stop Streaming"):
-                st.session_state.streaming = False
-                st.rerun()
-
-    if st.session_state.streaming:
-        st.write("**Streaming is ON.**")
-        predictions_tab_streaming(df_all)
-    else:
-        st.write("**Streaming is paused.**")
-        predictions_tab_paused(df_all)
-
-###############################
-# KEY VARIABLES TAB CONTROLLER
-###############################
-def key_variables_tab_controller(df_all: pd.DataFrame):
-    st.subheader("Key Variables (Top 8 Features)")
-    if st.session_state.streaming:
-        st.write("**Streaming is ON.**")
-        key_variables_tab_streaming(df_all) 
-    else:
-        st.write("**Streaming is paused.**")
-        key_variables_tab_paused(df_all)
-        
-
-@fragment(run_every=10)
-def key_variables_tab_streaming(df_all: pd.DataFrame):
-    st.write("### Key Variables - Streaming (Using Shared Anomalies)")
-
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 49
-
-    # 1) Grab the main anomaly-labeled df from session_state
-    if "df_main_anomalies" not in st.session_state:
-        st.warning("No anomaly data found in session_state. Please run Predictions tab first.")
-        return
-
-    df_main_ana = st.session_state["df_main_anomalies"]
-    top_features = st.session_state.get("top_features", [])
-
-    # 2) Slide your window in the *already-analyzed* dataframe
-    current_idx = st.session_state.current_index
-    end_idx = min(current_idx, len(df_main_ana) - 1)
-    start_idx = max(0, end_idx - (WINDOW_SIZE_KEYVARS - 1))
-
-    df_window = df_main_ana.iloc[start_idx : end_idx + 1].copy()
-    if df_window.empty:
-        st.warning("No data in this 50-row window.")
-        return
-
-    # 3) Simply plot these anomalies (no new calls to detect_anomalies_for_features)
-    plot_features_2x4_subplots_anomaly(df_window, top_features)
-
-    # 4) Advance index
-    if current_idx < len(df_main_ana) - 1:
-        st.session_state.current_index += 1
-    else:
-        st.warning("Reached end of dataset.")
-
-
 def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
-    from plotly.subplots import make_subplots
-    import plotly.graph_objects as go
-
-    # Convert timestamp to naive (no timezone)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
 
     fig = make_subplots(rows=2, cols=4, subplot_titles=features)
@@ -707,7 +333,6 @@ def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
         anom_col = f"{feat}_anomaly"
         mask_anom = df.get(anom_col, False)
 
-        # Main line
         fig.add_trace(
             go.Scatter(
                 x=df["timestamp"],
@@ -718,7 +343,6 @@ def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
             row=row, col=col
         )
 
-        # Red "X" anomaly points
         df_anom = df[mask_anom]
         fig.add_trace(
             go.Scatter(
@@ -738,16 +362,13 @@ def plot_features_2x4_no_weekends(df: pd.DataFrame, features: list):
         title="Key Variables"
     )
     st.plotly_chart(fig, use_container_width=True)
-    
-
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 def compute_performance_metrics(df: pd.DataFrame, 
                                 target_col: str = "moisture_in_z0", 
                                 pred_col: str = "predicted_moisture") -> dict:
     """
-    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col (non-null).
-    Return a dict with {mse, mae, r2}.
+    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col.
+    Returns a dict with {mse, mae, r2}.
     """
     df_valid = df.dropna(subset=[target_col, pred_col])
     if df_valid.empty:
@@ -761,6 +382,304 @@ def compute_performance_metrics(df: pd.DataFrame,
     r2_val  = r2_score(y_true, y_pred)
     return {"mse": mse_val, "mae": mae_val, "r2": r2_val}
 
+###############################################################################
+# 8) Data Exploration Fragment
+###############################################################################
+@fragment
+def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
+    st.subheader("Data Exploration")
+    # For exploration we use the sliding window based on current offset
+    window_duration = st.session_state.window_duration
+    # Use the current offset (if not set, it will be zero)
+    current_offset = st.session_state.get("current_offset", timedelta(0))
+    data_window = get_sliding_window_data(df_all, current_offset, window_duration)
+
+    analysis_options = [
+        "Distributions (Full Dataset)",
+        "Correlation Heatmap (Full Dataset)",
+        "Window Distribution Comparison",
+        "Anomaly Detection (Window)",
+        "Feature Importances"
+    ]
+    selected_analyses = st.multiselect(
+        "Select Analyses to Display",
+        analysis_options,
+        default=["Window Distribution Comparison", "Anomaly Detection (Window)", "Feature Importances"]
+    )
+
+    if "Distributions (Full Dataset)" in selected_analyses:
+        numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
+        chosen_dist_cols = st.multiselect(
+            "Choose columns for distribution plots (Full Dataset)",
+            numeric_cols,
+            default=numeric_cols[:3] if len(numeric_cols) >= 3 else numeric_cols
+        )
+        st.write("### Distributions (Full Dataset)")
+        plot_distributions_custom(df_all, chosen_dist_cols)
+
+    if "Correlation Heatmap (Full Dataset)" in selected_analyses:
+        numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
+        chosen_corr_cols = st.multiselect(
+            "Choose columns for correlation heatmap",
+            numeric_cols,
+            default=numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols
+        )
+        st.write("### Correlation Heatmap")
+        plot_correlation_custom(df_all, chosen_corr_cols)
+
+    if "Window Distribution Comparison" in selected_analyses:
+        st.write("### Window Distribution Comparison")
+        plot_distribution_comparison(df_all, data_window)
+
+    if "Anomaly Detection (Window)" in selected_analyses:
+        st.write("### Anomaly Detection (Current Window)")
+        with st.form("anomaly_form"):
+            numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
+            default_temp_cols = [c for c in numeric_cols if "temp_in_z0" in c or "temp_out_z0" in c]
+            if not default_temp_cols:
+                default_temp_cols = numeric_cols[:1]
+            selected_anomaly_cols = st.multiselect(
+                "Columns to analyze for anomalies (Z-score):",
+                numeric_cols,
+                default=default_temp_cols
+            )
+            z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
+            update_button = st.form_submit_button("Update Anomalies")
+
+        if update_button and selected_anomaly_cols:
+            anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
+            anomaly_rate = anomalies_df['any_anomaly'].mean()
+            st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
+            anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
+            if not anomaly_rows.empty:
+                st.write("**Anomalous rows (up to 20 displayed)**:")
+                st.dataframe(anomaly_rows.head(20))
+            else:
+                st.write("No anomalies found with current threshold and columns.")
+
+    if "Feature Importances" in selected_analyses and model is not None:
+        st.write("### Feature Importances (Model)")
+        plot_feature_importances(model, feature_columns)
+
+###############################################################################
+# 9) Predictions Tab (Streaming & Paused, Sliding Window)
+###############################################################################
+@fragment(run_every=10)
+def predictions_tab_streaming(df_all: pd.DataFrame):
+    """Re-runs every 10 seconds; the sliding window moves forward by a fixed increment."""
+    # Ensure timestamps are converted properly
+    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
+    window_duration = st.session_state.window_duration
+
+    # Initialize current_offset if not set
+    if "current_offset" not in st.session_state:
+        st.session_state.current_offset = timedelta(0)
+
+    data_window = get_sliding_window_data(df_all, st.session_state.current_offset, window_duration)
+    model = st.session_state.get("model", None)
+    data_with_preds = predict(model, data_window)
+
+    # Detect anomalies for top 8 features
+    top_features = st.session_state.get("top_features", [])
+    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
+    st.session_state["df_main_anomalies"] = df_ana
+
+    def highlight_anomaly_row(row):
+        if row.get("any_anomaly", False):
+            return ["background-color: yellow"] * len(row)
+        else:
+            return ["" for _ in row]
+
+    df_styled = df_ana.style.apply(highlight_anomaly_row, axis=1)
+    
+    col_left, col_right = st.columns([1, 2])
+    with col_left:
+        st.markdown("#### Predictions - Streaming (Sliding Window)")
+        st.write(df_styled)
+        anomaly_rows = df_ana[df_ana["any_anomaly"] == True]
+        if not anomaly_rows.empty:
+            st.write("**Anomaly columns (within top 8)** for these rows:")
+            for idx, row in anomaly_rows.iterrows():
+                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+                if anom_cols:
+                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
+        else:
+            st.write("No anomalies in the sliding window (top 8 features).")
+    with col_right:
+        plot_timeseries_with_prediction_interactive(df_ana)
+
+    # Increment the offset (simulate advancing time by 1 minute per polling cycle)
+    st.session_state.current_offset += timedelta(minutes=1)
+
+@fragment(run_every=None)
+def predictions_tab_paused(df_all: pd.DataFrame):
+    """Paused state: uses the current sliding window without advancing the offset."""
+    window_duration = st.session_state.window_duration
+    current_offset = st.session_state.get("current_offset", timedelta(0))
+    model = st.session_state.get("model", None)
+    data_window = get_sliding_window_data(df_all, current_offset, window_duration)
+    data_with_preds = predict(model, data_window)
+
+    top_features = st.session_state.get("top_features", [])
+    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
+
+    def highlight_anomaly_row(row):
+        if row.get("any_anomaly", False):
+            return ["background-color: yellow"] * len(row)
+        else:
+            return ["" for _ in row]
+
+    df_styled = df_ana.style.apply(highlight_anomaly_row, axis=1)
+
+    col_left, col_right = st.columns([1, 2])
+    with col_left:
+        st.markdown("#### Predictions - Paused (Sliding Window)")
+        st.write(df_styled)
+        anomaly_rows = df_ana[df_ana["any_anomaly"] == True]
+        if not anomaly_rows.empty:
+            st.write("**Anomaly columns (within top 8)**:")
+            for idx, row in anomaly_rows.iterrows():
+                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+                if anom_cols:
+                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
+        else:
+            st.write("No anomalies in the sliding window (top 8 features).")
+    with col_right:
+        plot_timeseries_with_prediction_interactive(df_ana)
+
+###############################################################################
+# 10) Key Variables Tab (Sliding Window)
+###############################################################################
+@fragment(run_every=None)
+def key_variables_tab_paused(df_all: pd.DataFrame):
+    st.write("### Key Variables - Paused (Sliding Window)")
+    model = st.session_state.get("model", None)
+    if model is None:
+        st.warning("No model available.")
+        return
+
+    window_duration = st.session_state.window_duration
+    current_offset = st.session_state.get("current_offset", timedelta(0))
+    data_window = get_sliding_window_data(df_all, current_offset, window_duration)
+    data_with_preds = predict(model, data_window)
+    top_features = st.session_state.get("top_features", [])
+    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
+    plot_features_2x4_subplots_anomaly(df_ana, top_features)
+
+###############################################################################
+# 11) Controllers
+###############################################################################
+def predictions_tab_controller(df_all: pd.DataFrame):
+    st.subheader("Predictions and Real-Time Stream")
+    st.sidebar.header("⚙️ Configuration")
+
+    # Sidebar slider for window duration (hours)
+    window_duration = st.sidebar.slider(
+        "Window Duration (hours):", 
+        min_value=1.0, 
+        max_value=2.0, 
+        value=1.0, 
+        step=0.5
+    )
+    st.session_state.window_duration = window_duration
+
+    st.sidebar.header("🔄 Retrain Model on Custom Window")
+    retrain_enabled = st.sidebar.checkbox("Enable Custom Training Window")
+    if retrain_enabled:
+        st.sidebar.write("### Select Custom Training Time Range")
+        dataset_start = st.session_state.stream_data['timestamp'].min()
+        dataset_end = st.session_state.stream_data['timestamp'].max()
+        
+        fixed_window_start_date = st.sidebar.date_input(
+            "Start Date",
+            value=dataset_start.date(),
+            min_value=dataset_start.date(),
+            max_value=dataset_end.date()
+        )
+        fixed_window_start_time = st.sidebar.time_input(
+            "Start Time",
+            value=dataset_start.time()
+        )
+        retrain_duration = st.sidebar.slider(
+            "Duration (days):", 
+            min_value=1, 
+            max_value=30, 
+            value=1, 
+            step=1
+        )
+        fixed_window_end_datetime = datetime.combine(
+            fixed_window_start_date, 
+            fixed_window_start_time
+        ) + timedelta(days=retrain_duration)
+        fixed_window_end_date = st.sidebar.date_input(
+            "End Date",
+            value=fixed_window_end_datetime.date(),
+            min_value=fixed_window_start_date,
+            max_value=dataset_end.date()
+        )
+        fixed_window_end_time = st.sidebar.time_input(
+            "End Time",
+            value=fixed_window_end_datetime.time()
+        )
+        fixed_start_datetime = datetime.combine(fixed_window_start_date, fixed_window_start_time)
+        fixed_end_datetime = datetime.combine(fixed_window_end_date, fixed_window_end_time)
+        if fixed_end_datetime <= fixed_start_datetime:
+            st.sidebar.error("End datetime must be after start datetime.")
+        if st.sidebar.button("🔄 Retrain Model"):
+            retrain_data = df_all[
+                (df_all['timestamp'] >= fixed_start_datetime) & 
+                (df_all['timestamp'] <= fixed_end_datetime)
+            ].copy()
+            if retrain_data.empty:
+                st.sidebar.error("No data available in the selected window for retraining.")
+            else:
+                with st.spinner("Retraining model on the selected subset..."):
+                    new_model, new_mse = train_model(retrain_data)
+                    if new_model is not None:
+                        st.session_state.model = new_model
+                        st.session_state.model_mse = new_mse
+                        st.session_state.retrained_on = (fixed_start_datetime, fixed_end_datetime)
+                        st.success(f"Model retrained on data from {fixed_start_datetime} to {fixed_end_datetime}. MSE: {new_mse:.4f}")
+                    else:
+                        st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
+    else:
+        st.sidebar.write("Polling interval: 10s (fixed)")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if not st.session_state.get("streaming", False):
+            if st.button("▶️ Start Streaming"):
+                if "top_features" not in st.session_state:
+                    model = st.session_state.get("model", None)
+                    if model is not None:
+                        feature_cols = st.session_state.get("feature_columns", [])
+                        st.session_state.top_features = get_top_n_features(model, feature_cols, n=8)
+                st.session_state.streaming = True
+                st.rerun()
+        else:
+            if st.button("🛑 Stop Streaming"):
+                st.session_state.streaming = False
+                st.rerun()
+
+    if st.session_state.get("streaming", False):
+        st.write("**Streaming is ON.**")
+        predictions_tab_streaming(df_all)
+    else:
+        st.write("**Streaming is paused.**")
+        predictions_tab_paused(df_all)
+
+def key_variables_tab_controller(df_all: pd.DataFrame):
+    st.subheader("Key Variables (Top 8 Features)")
+    if st.session_state.get("streaming", False):
+        st.write("**Streaming is ON.**")
+        key_variables_tab_paused(df_all)
+    else:
+        st.write("**Streaming is paused.**")
+        key_variables_tab_paused(df_all)
+
+###############################################################################
+# 12) Model Performance Tab
+###############################################################################
 @fragment(run_every=None)
 def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     st.subheader("Model Performance")
@@ -769,10 +688,8 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         st.warning("No trained model available. Please train the model first.")
         return
 
-    # 1) Full-dataset prediction
-    # ----------------------------------
-    df_all_preds = predict(model, df_all)  # uses your existing function
-    # We'll rename the column to avoid overwriting anything
+    # Full-dataset prediction
+    df_all_preds = predict(model, df_all)
     df_all_preds.rename(
         columns={"predicted_moisture": "predicted_moisture_full"}, 
         inplace=True
@@ -784,19 +701,17 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         pred_col="predicted_moisture_full"
     )
 
-    # 2) Current window predictions
-    # ----------------------------------
-    end_idx = min(st.session_state.current_index, len(df_all) - 1)
-    data_window = get_window_data(df_all, end_idx, st.session_state.get("demo_window_size", 3))
-    df_window_preds = predict(model, data_window)  # predicted_moisture column
+    # Sliding window predictions based on current offset
+    window_duration = st.session_state.window_duration
+    current_offset = st.session_state.get("current_offset", timedelta(0))
+    data_window = get_sliding_window_data(df_all, current_offset, window_duration)
+    df_window_preds = predict(model, data_window)
     window_metrics = compute_performance_metrics(
         df_window_preds, 
         target_col="moisture_in_z0", 
         pred_col="predicted_moisture"
     )
 
-    # 3) Display metrics
-    # ----------------------------------
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### Full Dataset Metrics")
@@ -808,16 +723,14 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.metric(label="R² (Full)", value=f"{full_metrics['r2']:.4f}")
 
     with col2:
-        st.markdown("### Current Window Metrics")
+        st.markdown("### Sliding Window Metrics")
         if window_metrics["mse"] is None:
-            st.write("No valid rows in the current window for metric computation.")
+            st.write("No valid rows in the sliding window for metric computation.")
         else:
             st.metric(label="MSE (Window)", value=f"{window_metrics['mse']:.4f}")
             st.metric(label="MAE (Window)", value=f"{window_metrics['mae']:.4f}")
             st.metric(label="R² (Window)", value=f"{window_metrics['r2']:.4f}")
 
-    # 4) Optional: Plot actual vs. predicted lines
-    # ----------------------------------
     st.markdown("### Full Dataset: Actual vs. Predicted")
     if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
         st.write("No valid predictions for full dataset.")
@@ -832,21 +745,20 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_full, use_container_width=True)
 
-    st.markdown("### Current Window: Actual vs. Predicted")
+    st.markdown("### Sliding Window: Actual vs. Predicted")
     if df_window_preds["predicted_moisture"].dropna().empty:
-        st.write("No valid predictions for the current window.")
+        st.write("No valid predictions for the sliding window.")
     else:
         fig_window = px.line(
             df_window_preds.dropna(subset=["predicted_moisture", "moisture_in_z0"]),
             x="timestamp",
             y=["moisture_in_z0", "predicted_moisture"],
             labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Current Window: Actual vs. Predicted Moisture"
+            title="Sliding Window: Actual vs. Predicted Moisture"
         )
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
 
-    # Display retraining note if applicable
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(
@@ -854,12 +766,10 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         )
 
 ###############################################################################
-# 12) Main App
+# 13) Main App
 ###############################################################################
 def main():
     st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
-
-    # Minimize extra spacing with custom CSS
     st.markdown(
         """
         <style>
@@ -883,8 +793,6 @@ def main():
     st.image("res/Miningful_NoBG_WhiteText.png", width=120)
     st.markdown("### Miningful Predictive Maintenance Demo")
 
-    # Sidebar config is now handled in predictions_tab_controller
-    # Initialize session state variables if not already
     if "stream_data" not in st.session_state:
         st.session_state.stream_data = load_data_remote()
     df_all = st.session_state.stream_data
@@ -904,20 +812,6 @@ def main():
     else:
         st.warning("Not enough data to train the model.")
 
-    # Initialize current index if needed
-    if "initial_window_set" not in st.session_state:
-        dataset_start = df_all['timestamp'].min()
-        demo_window_size = st.session_state.get("demo_window_size", 3)
-        initial_end_time = dataset_start + timedelta(days=demo_window_size)
-        idx = find_index_for_time(df_all, initial_end_time)
-        st.session_state.current_index = idx
-        st.session_state.initial_window_set = True
-
-    # Streaming flag
-    if "streaming" not in st.session_state:
-        st.session_state.streaming = False
-
-    # Feature columns for top-features logic
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
@@ -929,7 +823,12 @@ def main():
     ]
     st.session_state.feature_columns = feature_columns
 
-    # Tabs: Predictions, Data Exploration, Key Variables, Model Performance
+    # Initialize streaming flag and current_offset if not set
+    if "streaming" not in st.session_state:
+        st.session_state.streaming = False
+    if "current_offset" not in st.session_state:
+        st.session_state.current_offset = timedelta(0)
+
     tab1, tab2, tab3, tab4 = st.tabs([
         "Predictions", 
         "Data Exploration", 
