@@ -57,20 +57,16 @@ def train_model(df: pd.DataFrame):
         'temp_in_z9', 'temp_out_z9'
     ]
     target_column = 'moisture_in_z0'
-
     df_model = df.dropna(subset=feature_columns + [target_column])
     if df_model.empty:
         return None, None
-
     X = df_model[feature_columns]
     y = df_model[target_column]
-
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
     model = RandomForestRegressor(random_state=42)
     model.fit(X_train, y_train)
-
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
     return model, mse
@@ -101,7 +97,6 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     """Use the model to predict 'predicted_moisture' from feature columns."""
     if model is None or data_window.empty:
         return data_window
-
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
@@ -114,7 +109,6 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     X = data_window[feature_columns].dropna()
     if X.empty:
         return data_window
-
     preds = model.predict(X)
     data_window = data_window.copy()
     data_window.loc[X.index, 'predicted_moisture'] = preds
@@ -130,7 +124,6 @@ def plot_timeseries_with_prediction_interactive(
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
-
     df_filtered = df.dropna(subset=[predicted_col])
     fig = px.line(
         df_filtered,
@@ -153,7 +146,7 @@ def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
         st.write("No columns selected.")
         return
     num_cols = len(columns_to_plot)
-    # Reduce figure size: 4 inches per column, 4 inches tall.
+    # Reduced figure size: 4 inches per column, 4 inches tall.
     fig, axs = plt.subplots(1, num_cols, figsize=(4*num_cols, 4))
     if num_cols == 1:
         axs = [axs]
@@ -163,6 +156,7 @@ def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
         else:
             df[col].dropna().plot(kind='density', ax=ax)
         ax.set_title(f"{col} Distribution", fontsize=10)
+    plt.tight_layout()
     st.pyplot(fig)
 
 def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
@@ -177,6 +171,7 @@ def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
     fig, ax = plt.subplots(figsize=(6, 4))
     sns.heatmap(sub_df.corr(), annot=False, cmap='coolwarm', ax=ax, cbar_kws={"shrink": 0.8})
     ax.set_title("Correlation Heatmap (Selected Columns)", fontsize=10)
+    plt.tight_layout()
     st.pyplot(fig)
 
 def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFrame, columns: list):
@@ -198,6 +193,7 @@ def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFra
         ax.legend(fontsize=8)
     for j in range(i+1, len(axs)):
         axs[j].set_visible(False)
+    plt.tight_layout()
     st.pyplot(fig)
 
 def plot_feature_importances(model, feature_names):
@@ -213,20 +209,23 @@ def plot_feature_importances(model, feature_names):
     ax.barh(sorted_features, sorted_importances, color='skyblue')
     ax.set_xlabel("Importance", fontsize=10)
     ax.set_title("Feature Importances (RandomForest)", fontsize=10)
+    plt.tight_layout()
     st.pyplot(fig)
 
 def plot_anomaly_detection_graph(df: pd.DataFrame, anomaly_cols: list):
     """
-    For each column in anomaly_cols, plot the time series with normal values as a line
-    and anomalies highlighted as red markers.
+    For each column in anomaly_cols that has at least one anomaly in the dataframe,
+    plot the time series with normal values as a line and anomalies highlighted as red markers.
+    Only variables with anomalies are plotted.
     """
     fig = px.scatter()
     for col in anomaly_cols:
-        normal = df[~df[f"{col}_anomaly"]]
-        anomalous = df[df[f"{col}_anomaly"]]
-        fig.add_scatter(x=normal['timestamp'], y=normal[col], mode='lines', name=f"{col} Normal")
-        fig.add_scatter(x=anomalous['timestamp'], y=anomalous[col], mode='markers',
-                        marker=dict(color='red', size=8), name=f"{col} Anomaly")
+        if not df[df[f"{col}_anomaly"]].empty:
+            normal = df[~df[f"{col}_anomaly"]]
+            anomalous = df[df[f"{col}_anomaly"]]
+            fig.add_scatter(x=normal['timestamp'], y=normal[col], mode='lines', name=f"{col} Normal")
+            fig.add_scatter(x=anomalous['timestamp'], y=anomalous[col], mode='markers',
+                            marker=dict(color='red', size=8), name=f"{col} Anomaly")
     fig.update_layout(title="Anomaly Detection Over Time", height=300)
     st.plotly_chart(fig, use_container_width=True)
 
@@ -258,7 +257,34 @@ def detect_anomalies_for_features(df: pd.DataFrame, features: list, z_threshold=
     return df_out
 
 ###############################################################################
-# 6) Key Variables Plot: (unchanged here)
+# 6b) Compute Performance Metrics
+###############################################################################
+def compute_performance_metrics(df: pd.DataFrame, target_col: str = "moisture_in_z0", pred_col: str = "predicted_moisture") -> dict:
+    """
+    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col.
+    Returns a dict with keys 'mse', 'mae', and 'r2'.
+    """
+    df_valid = df.dropna(subset=[target_col, pred_col])
+    if df_valid.empty:
+        return {"mse": None, "mae": None, "r2": None}
+    y_true = df_valid[target_col]
+    y_pred = df_valid[pred_col]
+    mse_val = mean_squared_error(y_true, y_pred)
+    mae_val = mean_absolute_error(y_true, y_pred)
+    r2_val  = r2_score(y_true, y_pred)
+    return {"mse": mse_val, "mae": mae_val, "r2": r2_val}
+
+def get_top_n_features(model, feature_names, n=8):
+    """Return top-n features based on feature_importances_, descending."""
+    if not hasattr(model, 'feature_importances_'):
+        return []
+    importances = model.feature_importances_
+    indices_desc = np.argsort(importances)[::-1]
+    top_indices = indices_desc[:n]
+    return [feature_names[i] for i in top_indices]
+
+###############################################################################
+# 6c) Key Variables Plot: (unchanged here)
 ###############################################################################
 def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     """
@@ -269,10 +295,7 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     """
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
     fig = make_subplots(rows=2, cols=4, subplot_titles=features)
-    row_col_map = [
-        (1,1), (1,2), (1,3), (1,4),
-        (2,1), (2,2), (2,3), (2,4)
-    ]
+    row_col_map = [(1,1), (1,2), (1,3), (1,4), (2,1), (2,2), (2,3), (2,4)]
     for i, feat in enumerate(features):
         row, col = row_col_map[i]
         anom_col = f"{feat}_anomaly"
@@ -317,6 +340,12 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     st.subheader("Data Exploration")
+    
+    # Automatically compute top_features if not available.
+    if "top_features" not in st.session_state or not st.session_state.top_features:
+        if model is not None and "feature_columns" in st.session_state:
+            st.session_state.top_features = get_top_n_features(model, st.session_state.feature_columns, n=8)
+    
     # Use sliding window based on current offset
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
@@ -326,7 +355,6 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     default_top_features = st.session_state.get("top_features", None)
     
     analysis_options = [
-        "Distributions (Full Dataset)",
         "Correlation Heatmap (Full Dataset)",
         "Window Distribution Comparison",
         "Anomaly Detection (Window)",
@@ -337,18 +365,6 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         analysis_options,
         default=["Window Distribution Comparison", "Anomaly Detection (Window)", "Feature Importances"]
     )
-    
-    if "Distributions (Full Dataset)" in selected_analyses:
-        numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-        # Default to top features if available, otherwise first 3.
-        default_cols = default_top_features if default_top_features else (numeric_cols[:3] if len(numeric_cols) >= 3 else numeric_cols)
-        chosen_dist_cols = st.multiselect(
-            "Choose columns for distribution plots (Full Dataset)",
-            numeric_cols,
-            default=default_cols
-        )
-        st.write("### Distributions (Full Dataset)")
-        plot_distributions_custom(df_all, chosen_dist_cols)
     
     if "Correlation Heatmap (Full Dataset)" in selected_analyses:
         numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
@@ -363,9 +379,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     
     if "Window Distribution Comparison" in selected_analyses:
         st.write("### Window Distribution Comparison")
-        # For this section, default to top 8 key variables if available; otherwise use fallback list.
         default_dist_cols = default_top_features if default_top_features and len(default_top_features) >= 8 else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
-        # Allow user to select columns; default is the top 8.
         selected_cols = st.multiselect(
             "Select columns for distribution comparison",
             df_all.select_dtypes(include=[np.number]).columns.tolist(),
@@ -427,7 +441,7 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
             return ["" for _ in row]
     
     # Show only the last 5 records.
-    df_last5 = df_ana.tail(5)
+    df_last5 = df_ana.sort_values('timestamp').tail(5)
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
     col_left, col_right = st.columns([1, 2])
@@ -464,8 +478,8 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         else:
             return ["" for _ in row]
     
-    # Change: Only show the last 5 records in paused mode.
-    df_last5 = df_ana.tail(5)
+    # Show only the last 5 records in paused mode.
+    df_last5 = df_ana.sort_values('timestamp').tail(5)
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
     col_left, col_right = st.columns([1, 2])
@@ -484,7 +498,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     with col_right:
         plot_timeseries_with_prediction_interactive(df_ana)
 
-
 ###############################################################################
 # 10) Key Variables Tab (Sliding Window)
 ###############################################################################
@@ -492,14 +505,15 @@ def predictions_tab_paused(df_all: pd.DataFrame):
 def key_variables_tab_paused(df_all: pd.DataFrame):
     st.write("### Key Variables - Paused (Sliding Window)")
     model = st.session_state.get("model", None)
-    if model is None:
-        st.warning("No model available.")
+    # Check if top_features has been computed.
+    top_features = st.session_state.get("top_features", [])
+    if not top_features:
+        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
         return
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
     data_with_preds = predict(model, data_window)
-    top_features = st.session_state.get("top_features", [])
     df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
     plot_features_2x4_subplots_anomaly(df_ana, top_features)
 
@@ -583,7 +597,7 @@ def predictions_tab_controller(df_all: pd.DataFrame):
     with col1:
         if not st.session_state.get("streaming", False):
             if st.button("▶️ Start Streaming"):
-                if "top_features" not in st.session_state:
+                if "top_features" not in st.session_state or not st.session_state.top_features:
                     model = st.session_state.get("model", None)
                     if model is not None:
                         feature_cols = st.session_state.get("feature_columns", [])
@@ -603,6 +617,10 @@ def predictions_tab_controller(df_all: pd.DataFrame):
 
 def key_variables_tab_controller(df_all: pd.DataFrame):
     st.subheader("Key Variables (Top 8 Features)")
+    # If top_features not computed, warn and do not display key variables.
+    if "top_features" not in st.session_state or not st.session_state.top_features:
+        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+        return
     if st.session_state.get("streaming", False):
         st.write("**Streaming is ON.**")
         key_variables_tab_paused(df_all)
@@ -684,34 +702,6 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
-        
-def compute_performance_metrics(df: pd.DataFrame, 
-                                target_col: str = "moisture_in_z0", 
-                                pred_col: str = "predicted_moisture") -> dict:
-    """
-    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col.
-    Returns a dict with {mse, mae, r2}.
-    """
-    df_valid = df.dropna(subset=[target_col, pred_col])
-    if df_valid.empty:
-        return {"mse": None, "mae": None, "r2": None}
-    
-    y_true = df_valid[target_col]
-    y_pred = df_valid[pred_col]
-    
-    mse_val = mean_squared_error(y_true, y_pred)
-    mae_val = mean_absolute_error(y_true, y_pred)
-    r2_val  = r2_score(y_true, y_pred)
-    return {"mse": mse_val, "mae": mae_val, "r2": r2_val}
-
-def get_top_n_features(model, feature_names, n=8):
-    """Return top-n features based on feature_importances_, descending."""
-    if not hasattr(model, 'feature_importances_'):
-        return []
-    importances = model.feature_importances_
-    indices_desc = np.argsort(importances)[::-1]
-    top_indices = indices_desc[:n]
-    return [feature_names[i] for i in top_indices]
 
 ###############################################################################
 # 13) Main App
