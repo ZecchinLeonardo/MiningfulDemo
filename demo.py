@@ -146,7 +146,6 @@ def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
         st.write("No columns selected.")
         return
     num_cols = len(columns_to_plot)
-    # Reduced figure size: 4 inches per column, 4 inches tall.
     fig, axs = plt.subplots(1, num_cols, figsize=(4*num_cols, 4))
     if num_cols == 1:
         axs = [axs]
@@ -167,7 +166,6 @@ def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
     if sub_df.shape[1] < 2:
         st.write("Not enough columns selected for correlation heatmap.")
         return
-    # Reduced size heatmap.
     fig, ax = plt.subplots(figsize=(6, 4))
     sns.heatmap(sub_df.corr(), annot=False, cmap='coolwarm', ax=ax, cbar_kws={"shrink": 0.8})
     ax.set_title("Correlation Heatmap (Selected Columns)", fontsize=10)
@@ -178,6 +176,7 @@ def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFra
     """
     Compare distributions of the given columns in the full dataset vs the window,
     arranging the plots in a 2x4 grid.
+    (This graph is displayed at full width.)
     """
     n = len(columns)
     rows = math.ceil(n/4)
@@ -204,7 +203,6 @@ def plot_feature_importances(model, feature_names):
     sorted_idx = np.argsort(importances)
     sorted_features = [feature_names[i] for i in sorted_idx]
     sorted_importances = importances[sorted_idx]
-    # Reduced figure size.
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.barh(sorted_features, sorted_importances, color='skyblue')
     ax.set_xlabel("Importance", fontsize=10)
@@ -440,7 +438,6 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         else:
             return ["" for _ in row]
     
-    # Show only the last 5 records.
     df_last5 = df_ana.sort_values('timestamp').tail(5)
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
@@ -478,7 +475,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         else:
             return ["" for _ in row]
     
-    # Show only the last 5 records in paused mode.
     df_last5 = df_ana.sort_values('timestamp').tail(5)
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
@@ -499,27 +495,92 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         plot_timeseries_with_prediction_interactive(df_ana)
 
 ###############################################################################
-# 10) Key Variables Tab (Sliding Window)
+# 12) Model Performance Tab (Now Includes Key Variables)
 ###############################################################################
 @fragment(run_every=None)
-def key_variables_tab_paused(df_all: pd.DataFrame):
-    st.write("### Key Variables - Paused (Sliding Window)")
-    model = st.session_state.get("model", None)
-    # Check if top_features has been computed.
-    top_features = st.session_state.get("top_features", [])
-    if not top_features:
-        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
+    st.subheader("Model Performance")
+    if model is None:
+        st.warning("No trained model available. Please train the model first.")
         return
+    df_all_preds = predict(model, df_all)
+    df_all_preds.rename(
+        columns={"predicted_moisture": "predicted_moisture_full"}, 
+        inplace=True
+    )
+    full_metrics = compute_performance_metrics(
+        df_all_preds, 
+        target_col="moisture_in_z0", 
+        pred_col="predicted_moisture_full"
+    )
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-    data_with_preds = predict(model, data_window)
-    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
-    plot_features_2x4_subplots_anomaly(df_ana, top_features)
+    df_window_preds = predict(model, data_window)
+    window_metrics = compute_performance_metrics(
+        df_window_preds, 
+        target_col="moisture_in_z0", 
+        pred_col="predicted_moisture"
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Full Dataset Metrics")
+        if full_metrics["mse"] is None:
+            st.write("No valid rows for full-dataset metric computation.")
+        else:
+            st.metric(label="MSE (Full)", value=f"{full_metrics['mse']:.4f}")
+            st.metric(label="MAE (Full)", value=f"{full_metrics['mae']:.4f}")
+            st.metric(label="R² (Full)", value=f"{full_metrics['r2']:.4f}")
+    with col2:
+        st.markdown("### Sliding Window Metrics")
+        if window_metrics["mse"] is None:
+            st.write("No valid rows in the sliding window for metric computation.")
+        else:
+            st.metric(label="MSE (Window)", value=f"{window_metrics['mse']:.4f}")
+            st.metric(label="MAE (Window)", value=f"{window_metrics['mae']:.4f}")
+            st.metric(label="R² (Window)", value=f"{window_metrics['r2']:.4f}")
+    st.markdown("### Full Dataset: Actual vs. Predicted")
+    if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
+        st.write("No valid predictions for full dataset.")
+    else:
+        fig_full = px.line(
+            df_all_preds.dropna(subset=["predicted_moisture_full", "moisture_in_z0"]),
+            x="timestamp",
+            y=["moisture_in_z0", "predicted_moisture_full"],
+            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
+            title="Full Dataset: Actual vs. Predicted Moisture"
+        )
+        fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(fig_full, use_container_width=True)
+    st.markdown("### Sliding Window: Actual vs. Predicted")
+    if df_window_preds["predicted_moisture"].dropna().empty:
+        st.write("No valid predictions for the sliding window.")
+    else:
+        fig_window = px.line(
+            df_window_preds.dropna(subset=["predicted_moisture", "moisture_in_z0"]),
+            x="timestamp",
+            y=["moisture_in_z0", "predicted_moisture"],
+            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
+            title="Sliding Window: Actual vs. Predicted Moisture"
+        )
+        fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(fig_window, use_container_width=True)
+    
+    # NEW: Moved Key Variables content into Model Performance tab.
+    st.markdown("### Key Variables (Sliding Window)")
+    top_features = st.session_state.get("top_features", [])
+    if not top_features:
+        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+    else:
+        # Use the same data_window as before.
+        df_with_preds = predict(model, data_window)
+        df_ana = detect_anomalies_for_features(df_with_preds, top_features, z_threshold=3.0)
+        plot_features_2x4_subplots_anomaly(df_ana, top_features)
+    
+    if "retrained_on" in st.session_state:
+        retrain_start, retrain_end = st.session_state.retrained_on
+        st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
 
-###############################################################################
-# 11) Controllers
-###############################################################################
 def predictions_tab_controller(df_all: pd.DataFrame):
     st.subheader("Predictions and Real-Time Stream")
     st.sidebar.header("⚙️ Configuration")
@@ -615,93 +676,6 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
 
-def key_variables_tab_controller(df_all: pd.DataFrame):
-    st.subheader("Key Variables (Top 8 Features)")
-    # If top_features not computed, warn and do not display key variables.
-    if "top_features" not in st.session_state or not st.session_state.top_features:
-        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
-        return
-    if st.session_state.get("streaming", False):
-        st.write("**Streaming is ON.**")
-        key_variables_tab_paused(df_all)
-    else:
-        st.write("**Streaming is paused.**")
-        key_variables_tab_paused(df_all)
-
-###############################################################################
-# 12) Model Performance Tab
-###############################################################################
-@fragment(run_every=None)
-def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
-    st.subheader("Model Performance")
-    if model is None:
-        st.warning("No trained model available. Please train the model first.")
-        return
-    df_all_preds = predict(model, df_all)
-    df_all_preds.rename(
-        columns={"predicted_moisture": "predicted_moisture_full"}, 
-        inplace=True
-    )
-    full_metrics = compute_performance_metrics(
-        df_all_preds, 
-        target_col="moisture_in_z0", 
-        pred_col="predicted_moisture_full"
-    )
-    window_duration = st.session_state.window_duration
-    current_offset = st.session_state.get("current_offset", timedelta(0))
-    data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-    df_window_preds = predict(model, data_window)
-    window_metrics = compute_performance_metrics(
-        df_window_preds, 
-        target_col="moisture_in_z0", 
-        pred_col="predicted_moisture"
-    )
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("### Full Dataset Metrics")
-        if full_metrics["mse"] is None:
-            st.write("No valid rows for full-dataset metric computation.")
-        else:
-            st.metric(label="MSE (Full)", value=f"{full_metrics['mse']:.4f}")
-            st.metric(label="MAE (Full)", value=f"{full_metrics['mae']:.4f}")
-            st.metric(label="R² (Full)", value=f"{full_metrics['r2']:.4f}")
-    with col2:
-        st.markdown("### Sliding Window Metrics")
-        if window_metrics["mse"] is None:
-            st.write("No valid rows in the sliding window for metric computation.")
-        else:
-            st.metric(label="MSE (Window)", value=f"{window_metrics['mse']:.4f}")
-            st.metric(label="MAE (Window)", value=f"{window_metrics['mae']:.4f}")
-            st.metric(label="R² (Window)", value=f"{window_metrics['r2']:.4f}")
-    st.markdown("### Full Dataset: Actual vs. Predicted")
-    if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
-        st.write("No valid predictions for full dataset.")
-    else:
-        fig_full = px.line(
-            df_all_preds.dropna(subset=["predicted_moisture_full", "moisture_in_z0"]),
-            x="timestamp",
-            y=["moisture_in_z0", "predicted_moisture_full"],
-            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Full Dataset: Actual vs. Predicted Moisture"
-        )
-        fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(fig_full, use_container_width=True)
-    st.markdown("### Sliding Window: Actual vs. Predicted")
-    if df_window_preds["predicted_moisture"].dropna().empty:
-        st.write("No valid predictions for the sliding window.")
-    else:
-        fig_window = px.line(
-            df_window_preds.dropna(subset=["predicted_moisture", "moisture_in_z0"]),
-            x="timestamp",
-            y=["moisture_in_z0", "predicted_moisture"],
-            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Sliding Window: Actual vs. Predicted Moisture"
-        )
-        fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(fig_window, use_container_width=True)
-    if "retrained_on" in st.session_state:
-        retrain_start, retrain_end = st.session_state.retrained_on
-        st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
 
 ###############################################################################
 # 13) Main App
@@ -756,14 +730,13 @@ def main():
         st.session_state.streaming = False
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
-    tab1, tab2, tab3, tab4 = st.tabs(["Predictions", "Data Exploration", "Key Variables", "Model Performance"])
+    # Remove Key Variables tab; now we have only three tabs.
+    tab1, tab2, tab3 = st.tabs(["Predictions", "Data Exploration", "Model Performance"])
     with tab1:
         predictions_tab_controller(df_all)
     with tab2:
         data_exploration_tab(df_all, st.session_state.model, feature_columns)
     with tab3:
-        key_variables_tab_controller(df_all)
-    with tab4:
         model_performance_tab(df_all, st.session_state.model, feature_columns)
 
 if __name__ == "__main__":
