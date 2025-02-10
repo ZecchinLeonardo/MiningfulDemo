@@ -338,20 +338,23 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     st.subheader("Data Exploration")
-    
-    # Automatically compute top_features if not available.
+
+    # -- Auto-compute top features if not available --
     if "top_features" not in st.session_state or not st.session_state.top_features:
         if model is not None and "feature_columns" in st.session_state:
-            st.session_state.top_features = get_top_n_features(model, st.session_state.feature_columns, n=8)
-    
-    # Use sliding window based on current offset
+            st.session_state.top_features = get_top_n_features(
+                model, st.session_state.feature_columns, n=8
+            )
+
+    # -- Get sliding window data --
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-    
-    # Use default top 8 key variables if available.
+
+    # -- Default top features if available --
     default_top_features = st.session_state.get("top_features", None)
-    
+
+    # -- Analysis options for user selection --
     analysis_options = [
         "Correlation Heatmap (Full Dataset)",
         "Window Distribution Comparison",
@@ -361,35 +364,95 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     selected_analyses = st.multiselect(
         "Select Analyses to Display",
         analysis_options,
-        default=["Window Distribution Comparison", "Anomaly Detection (Window)", "Feature Importances"]
+        default=[
+            "Window Distribution Comparison",
+            "Anomaly Detection (Window)",
+            "Feature Importances",
+            "Correlation Heatmap (Full Dataset)"
+        ]
     )
-    
-    if "Correlation Heatmap (Full Dataset)" in selected_analyses:
+
+    # ─────────────────────────────────────────────────────────
+    #  1) CORRELATION HEATMAP & FEATURE IMPORTANCES SIDE BY SIDE
+    # ─────────────────────────────────────────────────────────
+    correlation_selected = "Correlation Heatmap (Full Dataset)" in selected_analyses
+    feature_importances_selected = "Feature Importances" in selected_analyses
+
+    # Both selected → two columns
+    if correlation_selected and feature_importances_selected:
+        left_col, right_col = st.columns(2)
+
+        # Correlation Heatmap in Left Column
+        with left_col:
+            numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
+            default_corr = (
+                default_top_features 
+                if default_top_features and len(default_top_features) >= 2 
+                else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
+            )
+            chosen_corr_cols = st.multiselect(
+                "Columns for correlation heatmap",
+                numeric_cols,
+                default=default_corr
+            )
+            st.write("#### Correlation Heatmap")
+            plot_correlation_custom(df_all, chosen_corr_cols)
+
+        # Feature Importances in Right Column
+        with right_col:
+            st.write("#### Feature Importances (Model)")
+            plot_feature_importances(model, feature_columns)
+
+    # If *only* correlation is selected
+    elif correlation_selected:
         numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-        default_corr = default_top_features if default_top_features and len(default_top_features) >= 2 else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
+        default_corr = (
+            default_top_features 
+            if default_top_features and len(default_top_features) >= 2 
+            else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
+        )
         chosen_corr_cols = st.multiselect(
-            "Choose columns for correlation heatmap",
+            "Columns for correlation heatmap",
             numeric_cols,
             default=default_corr
         )
-        st.write("### Correlation Heatmap")
+        st.write("#### Correlation Heatmap")
         plot_correlation_custom(df_all, chosen_corr_cols)
-    
+
+    # If *only* feature importances is selected
+    elif feature_importances_selected:
+        st.write("#### Feature Importances (Model)")
+        plot_feature_importances(model, feature_columns)
+
+    # ─────────────────────────────────────────────────────────
+    #  2) WINDOW DISTRIBUTION COMPARISON (FULL WIDTH)
+    # ─────────────────────────────────────────────────────────
     if "Window Distribution Comparison" in selected_analyses:
         st.write("### Window Distribution Comparison")
-        default_dist_cols = default_top_features if default_top_features and len(default_top_features) >= 8 else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+        default_dist_cols = (
+            default_top_features 
+            if default_top_features and len(default_top_features) >= 8 
+            else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+        )
         selected_cols = st.multiselect(
             "Select columns for distribution comparison",
             df_all.select_dtypes(include=[np.number]).columns.tolist(),
             default=default_dist_cols
         )
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
-    
+
+    # ─────────────────────────────────────────────────────────
+    #  3) ANOMALY DETECTION (WINDOW) - BELOW
+    # ─────────────────────────────────────────────────────────
     if "Anomaly Detection (Window)" in selected_analyses:
         st.write("### Anomaly Detection (Current Window)")
         with st.form("anomaly_form"):
             numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
-            default_anomaly = default_top_features if default_top_features and len(default_top_features) > 0 else (numeric_cols[:1] if numeric_cols else [])
+            default_anomaly = (
+                default_top_features 
+                if default_top_features and len(default_top_features) > 0 
+                else (numeric_cols[:1] if numeric_cols else [])
+            )
             selected_anomaly_cols = st.multiselect(
                 "Columns to analyze for anomalies (Z-score):",
                 numeric_cols,
@@ -397,7 +460,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
             )
             z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
             update_button = st.form_submit_button("Update Anomalies")
-    
+
         if update_button and selected_anomaly_cols:
             anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
             anomaly_rate = anomalies_df['any_anomaly'].mean()
@@ -410,10 +473,6 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
                 st.write("No anomalies found with current threshold and columns.")
             # Produce a graph for anomaly detection.
             plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
-    
-    if "Feature Importances" in selected_analyses and model is not None:
-        st.write("### Feature Importances (Model)")
-        plot_feature_importances(model, feature_columns)
 
 ###############################################################################
 # 9) Predictions Tab (Streaming & Paused, Sliding Window)
