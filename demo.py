@@ -258,19 +258,18 @@ def detect_anomalies_for_features(df: pd.DataFrame, features: list, z_threshold=
 # 6b) Compute Performance Metrics
 ###############################################################################
 def compute_performance_metrics(df: pd.DataFrame, target_col: str = "moisture_in_z0", pred_col: str = "predicted_moisture") -> dict:
-    """
-    Compute MSE, MAE, and R-squared for rows that have both target_col and pred_col.
-    Returns a dict with keys 'mse', 'mae', and 'r2'.
-    """
     df_valid = df.dropna(subset=[target_col, pred_col])
     if df_valid.empty:
-        return {"mse": None, "mae": None, "r2": None}
+        return {"mse": None, "mae": None, "mape": None, "r2": None}
     y_true = df_valid[target_col]
     y_pred = df_valid[pred_col]
     mse_val = mean_squared_error(y_true, y_pred)
     mae_val = mean_absolute_error(y_true, y_pred)
     r2_val  = r2_score(y_true, y_pred)
-    return {"mse": mse_val, "mae": mae_val, "r2": r2_val}
+    # Compute MAPE, using np.where to avoid division by zero issues.
+    mape_val = np.mean(np.abs((y_true - y_pred) / np.where(y_true != 0, y_true, 1))) * 100
+    return {"mse": mse_val, "mae": mae_val, "mape": mape_val, "r2": r2_val}
+
 
 def get_top_n_features(model, feature_names, n=8):
     """Return top-n features based on feature_importances_, descending."""
@@ -337,7 +336,6 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
 ###############################################################################
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
-    st.subheader("Data Exploration")
 
     # -- Auto-compute top features if not available --
     if "top_features" not in st.session_state or not st.session_state.top_features:
@@ -498,6 +496,21 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
             return ["" for _ in row]
     
     df_last5 = df_ana.sort_values('timestamp').tail(5)
+    # Reorder columns: keep 'timestamp' first, then 'moisture_in_z0' and 'predicted_moisture' as second and third.
+    cols = list(df_last5.columns)
+    desired_order = []
+    if 'timestamp' in cols:
+        desired_order.append('timestamp')
+    if 'moisture_in_z0' in cols:
+        desired_order.append('moisture_in_z0')
+    if 'predicted_moisture' in cols:
+        desired_order.append('predicted_moisture')
+    # Append any remaining columns.
+    for col in cols:
+        if col not in desired_order:
+            desired_order.append(col)
+    df_last5 = df_last5[desired_order]
+
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
     col_left, col_right = st.columns([1, 2])
@@ -543,6 +556,21 @@ def predictions_tab_paused(df_all: pd.DataFrame):
             return ["" for _ in row]
     
     df_last5 = df_ana.sort_values('timestamp').tail(5)
+    # Reorder columns: keep 'timestamp' first, then 'moisture_in_z0' and 'predicted_moisture' as second and third.
+    cols = list(df_last5.columns)
+    desired_order = []
+    if 'timestamp' in cols:
+        desired_order.append('timestamp')
+    if 'moisture_in_z0' in cols:
+        desired_order.append('moisture_in_z0')
+    if 'predicted_moisture' in cols:
+        desired_order.append('predicted_moisture')
+    # Append any remaining columns.
+    for col in cols:
+        if col not in desired_order:
+            desired_order.append(col)
+    df_last5 = df_last5[desired_order]
+
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
     
     col_left, col_right = st.columns([1, 2])
@@ -573,7 +601,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
 ###############################################################################
 @fragment(run_every=None)
 def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
-    st.subheader("Model Performance")
     if model is None:
         st.warning("No trained model available. Please train the model first.")
         return
@@ -596,23 +623,31 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         target_col="moisture_in_z0", 
         pred_col="predicted_moisture"
     )
+    
     col1, col2 = st.columns(2)
+    
+    # Full Dataset Metrics with hierarchical sizes
     with col1:
-        st.markdown("### Full Dataset Metrics")
+        st.markdown("<h1>Full Dataset Metrics</h1>", unsafe_allow_html=True)
         if full_metrics["mse"] is None:
             st.write("No valid rows for full-dataset metric computation.")
         else:
-            st.metric(label="MSE (Full)", value=f"{full_metrics['mse']:.4f}")
-            st.metric(label="MAE (Full)", value=f"{full_metrics['mae']:.4f}")
-            st.metric(label="R² (Full)", value=f"{full_metrics['r2']:.4f}")
+            st.markdown(f"<h2 style='color:red;'>MAE (Full): {full_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:red;'>MAPE (Full): {full_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h3>MSE (Full): {full_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3>R² (Full): {full_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
+    
+    # Sliding Window Metrics with hierarchical sizes
     with col2:
-        st.markdown("### Sliding Window Metrics")
+        st.markdown("<h1>Sliding Window Metrics</h1>", unsafe_allow_html=True)
         if window_metrics["mse"] is None:
             st.write("No valid rows in the sliding window for metric computation.")
         else:
-            st.metric(label="MSE (Window)", value=f"{window_metrics['mse']:.4f}")
-            st.metric(label="MAE (Window)", value=f"{window_metrics['mae']:.4f}")
-            st.metric(label="R² (Window)", value=f"{window_metrics['r2']:.4f}")
+            st.markdown(f"<h2 style='color:red;'>MAE (Window): {window_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:red;'>MAPE (Window): {window_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h3>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
+    
     st.markdown("### Full Dataset: Actual vs. Predicted")
     if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
         st.write("No valid predictions for full dataset.")
@@ -626,6 +661,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         )
         fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_full, use_container_width=True)
+    
     st.markdown("### Sliding Window: Actual vs. Predicted")
     if df_window_preds["predicted_moisture"].dropna().empty:
         st.write("No valid predictions for the sliding window.")
@@ -643,9 +679,8 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
-
+        
 def predictions_tab_controller(df_all: pd.DataFrame):
-    st.subheader("Predictions and Real-Time Stream")
     st.sidebar.header("⚙️ Configuration")
     window_duration = st.sidebar.slider(
         "Window Duration (hours):", 
@@ -776,7 +811,7 @@ def main():
             st.session_state.model_mse = mse
     if st.session_state.model is not None:
         mse_value = round(st.session_state.model_mse, 2)
-        st.markdown(f"<span style='color:green;font-weight:bold;'>Model training complete!</span> MSE: **{mse_value}**", unsafe_allow_html=True)
+        st.markdown(f"<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
     else:
         st.warning("Not enough data to train the model.")
     feature_columns = [
