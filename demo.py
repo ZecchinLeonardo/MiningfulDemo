@@ -810,7 +810,7 @@ def predictions_tab_controller(df_all: pd.DataFrame):
                     else:
                         st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
     else:
-        st.sidebar.write("Polling interval: 10s (fixed)")
+        st.sidebar.write("Polling interval: 3s (fixed)")
 
     col1, col2 = st.columns(2)
     with col1:
