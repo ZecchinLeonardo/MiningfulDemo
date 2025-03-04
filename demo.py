@@ -477,7 +477,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
 ###############################################################################
 # 9) Predictions Tab (Streaming & Paused, Sliding Window)
 ###############################################################################
-@fragment(run_every=10)
+@fragment(run_every=3)
 def predictions_tab_streaming(df_all: pd.DataFrame):
     """Re-runs every 10 seconds; the sliding window moves forward by a fixed increment."""
     df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
@@ -515,7 +515,15 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
         plot_timeseries_with_prediction_interactive(df_ana)
-    st.session_state.current_offset += timedelta(minutes=1)
+    
+    # NEW: Add Key Variables (Sliding Window) below the predictions.
+    st.markdown("### Key Variables (Sliding Window)")
+    if not top_features:
+        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+    else:
+        plot_features_2x4_subplots_anomaly(df_ana, top_features)
+    
+    st.session_state.current_offset += timedelta(seconds=10)
 
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
@@ -552,6 +560,13 @@ def predictions_tab_paused(df_all: pd.DataFrame):
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
         plot_timeseries_with_prediction_interactive(df_ana)
+    
+    st.markdown("### Key Variables (Sliding Window)")
+    if not top_features:
+        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+    else:
+        plot_features_2x4_subplots_anomaly(df_ana, top_features)
+
 
 ###############################################################################
 # 12) Model Performance Tab (Now Includes Key Variables)
@@ -624,17 +639,6 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         )
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
-    
-    # NEW: Moved Key Variables content into Model Performance tab.
-    st.markdown("### Key Variables (Sliding Window)")
-    top_features = st.session_state.get("top_features", [])
-    if not top_features:
-        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
-    else:
-        # Use the same data_window as before.
-        df_with_preds = predict(model, data_window)
-        df_ana = detect_anomalies_for_features(df_with_preds, top_features, z_threshold=3.0)
-        plot_features_2x4_subplots_anomaly(df_ana, top_features)
     
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
@@ -790,13 +794,13 @@ def main():
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
     # Remove Key Variables tab; now we have only three tabs.
-    tab1, tab2, tab3 = st.tabs(["Predictions", "Data Exploration", "Model Performance"])
+    tab1, tab2, tab3 = st.tabs(["Predictions", "Model Performance", "Data Exploration"])
     with tab1:
         predictions_tab_controller(df_all)
     with tab2:
-        data_exploration_tab(df_all, st.session_state.model, feature_columns)
-    with tab3:
         model_performance_tab(df_all, st.session_state.model, feature_columns)
+    with tab3:
+        data_exploration_tab(df_all, st.session_state.model, feature_columns)
 
 if __name__ == "__main__":
     main()
