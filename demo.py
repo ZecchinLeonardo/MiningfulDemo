@@ -1,4 +1,5 @@
 import streamlit as st
+st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
 from streamlit.runtime.fragment import fragment
 import pandas as pd
 import numpy as np
@@ -111,6 +112,8 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
         return data_window
     preds = model.predict(X)
     data_window = data_window.copy()
+    # Pre-create the column as float so that float predictions can be assigned.
+    data_window['predicted_moisture'] = np.nan
     data_window.loc[X.index, 'predicted_moisture'] = preds
     return data_window
 
@@ -536,18 +539,20 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
 ###############################################################################
 @fragment(run_every=3)
 def predictions_tab_streaming(df_all: pd.DataFrame):
-    """Re-runs every 10 seconds; the sliding window moves forward by a fixed increment."""
     df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
     window_duration = st.session_state.window_duration
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
+    # Get the current sliding window data.
     data_window = get_sliding_window_data(df_all, st.session_state.current_offset, window_duration)
     model = st.session_state.get("model", None)
-    data_with_preds = predict(model, data_window)
+    # Apply adjustments only to rows with timestamp > adjustment_start_time.
+    data_window_adjusted = apply_future_feature_adjustments(data_window)
+    data_with_preds = predict(model, data_window_adjusted)
     top_features = st.session_state.get("top_features", [])
     df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
     st.session_state["df_main_anomalies"] = df_ana
-
+    
     def highlight_anomaly_row(row):
         if row.get("any_anomaly", False):
             return ["background-color: yellow"] * len(row)
@@ -598,12 +603,12 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
 
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
-    """Paused state: uses the current sliding window without advancing the offset."""
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     model = st.session_state.get("model", None)
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-    data_with_preds = predict(model, data_window)
+    data_window_adjusted = apply_future_feature_adjustments(data_window)
+    data_with_preds = predict(model, data_window_adjusted)
     top_features = st.session_state.get("top_features", [])
     df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
     
@@ -833,12 +838,64 @@ def predictions_tab_controller(df_all: pd.DataFrame):
     else:
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
+    with st.expander("Adjust Top Feature Values", expanded=False):
+        if "top_features" in st.session_state and st.session_state.top_features:
+            adjustments = {}
+            # Arrange sliders in 4 compact columns (for 8 features)
+            cols = st.columns(4)
+            for i, feat in enumerate(st.session_state.top_features):
+                col = cols[i % 4]
+                # Use a compact slider (the label is just the feature name)
+                adjustments[feat] = col.slider(
+                    label=feat,
+                    min_value=-20, max_value=20,
+                    value=0, step=5,
+                    key=f"adjust_{feat}"
+                )
+            # Add a reset button for perturbations.
+            if st.button("Reset Adjustments"):
+                st.session_state.feature_adjustments = {feat: 0 for feat in st.session_state.top_features}
+                st.session_state.adjustment_start_time = None
+            # Button to set the "adjustment start time" to the current prediction timestamp.
+            if st.button("Apply Adjustments"):
+                # Use the latest timestamp from the currently displayed data if available; otherwise fallback to now.
+                if "df_main_anomalies" in st.session_state:
+                    current_max = st.session_state.df_main_anomalies["timestamp"].max()
+                else:
+                    current_max = pd.Timestamp.now()
+                st.session_state.adjustment_start_time = current_max
+            st.session_state.feature_adjustments = adjustments
+
+
+        
+###############################################################################
+# 13) Key Variable perturbation
+###############################################################################
+def apply_feature_adjustments_to_window(data_window: pd.DataFrame) -> pd.DataFrame:
+    adjusted_df = data_window.copy()
+    if "feature_adjustments" in st.session_state:
+        for feat, adj in st.session_state.feature_adjustments.items():
+            if feat in adjusted_df.columns:
+                adjusted_df[feat] = adjusted_df[feat] * (1 + adj / 100.0)
+    return adjusted_df
+
+def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
+    adjusted_df = data_window.copy()
+    # Get the stored adjustment start time; if not set, default to max(timestamp) in the window.
+    adj_start = st.session_state.get("adjustment_start_time", adjusted_df["timestamp"].max())
+    # For each feature in the adjustments dict, apply the percentage change only for rows with timestamp > adj_start.
+    if "feature_adjustments" in st.session_state:
+        for feat, adj in st.session_state.feature_adjustments.items():
+            if feat in adjusted_df.columns:
+                mask = adjusted_df["timestamp"] > adj_start
+                adjusted_df.loc[mask, feat] = adjusted_df.loc[mask, feat] * (1 + adj / 100.0)
+    return adjusted_df
+
 
 ###############################################################################
-# 13) Main App
+# 14) Main App
 ###############################################################################
 def main():
-    st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
     st.markdown(
         """
         <style>
@@ -882,6 +939,9 @@ def main():
         'temp_in_z9', 'temp_out_z9'
     ]
     st.session_state.feature_columns = feature_columns
+    # Pre-compute top features so that key variables and other sections render immediately.
+    if st.session_state.model is not None:
+        st.session_state.top_features = get_top_n_features(st.session_state.model, feature_columns, n=8)
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
     if "current_offset" not in st.session_state:
