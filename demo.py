@@ -21,7 +21,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 ###############################################################################
 # Fixed Start Time Constant (for sliding window)
 ###############################################################################
-FIXED_START_TIME = datetime(2023, 2, 17, 9, 23)  # Fixed start: Feb 17 at 11:48
+FIXED_START_TIME = datetime(2023, 2, 17, 9, 23)  # Fixed start: Feb 17 at 9:23
 
 ###############################################################################
 # 1) AWS Credentials and S3 client
@@ -120,7 +120,6 @@ def plot_timeseries_with_prediction_interactive(
     actual_col='moisture_in_z0',
     predicted_col='predicted_moisture'
 ):
-    """Plot actual vs. predicted moisture as lines in Plotly."""
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
@@ -130,12 +129,10 @@ def plot_timeseries_with_prediction_interactive(
         x=time_col,
         y=[actual_col, predicted_col],
         labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
-        title="Actual vs. Predicted Moisture Over Time"
+        title="Actual vs. Predicted Moisture Over Time",
+        color_discrete_sequence=["royalblue", "tomato"]
     )
-    fig.update_layout(
-        height=400,
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
 ###############################################################################
@@ -146,54 +143,88 @@ def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
         st.write("No columns selected.")
         return
     num_cols = len(columns_to_plot)
-    fig, axs = plt.subplots(1, num_cols, figsize=(4*num_cols, 4))
-    if num_cols == 1:
-        axs = [axs]
-    for ax, col in zip(axs, columns_to_plot):
+    fig = make_subplots(rows=1, cols=num_cols, subplot_titles=columns_to_plot)
+    for i, col in enumerate(columns_to_plot, start=1):
         if df[col].dropna().empty:
-            ax.text(0.5, 0.5, f"No data for {col}", ha='center', va='center')
+            fig.add_annotation(
+                text=f"No data for {col}",
+                xref=f"x{i} domain", yref=f"y{i} domain",
+                showarrow=False, row=1, col=i
+            )
         else:
-            df[col].dropna().plot(kind='density', ax=ax)
-        ax.set_title(f"{col} Distribution", fontsize=10)
-    plt.tight_layout()
-    st.pyplot(fig)
+            fig.add_trace(
+                go.Histogram(
+                    x=df[col].dropna(),
+                    histnorm='density',
+                    name=col,
+                    marker_color='royalblue',
+                    opacity=0.75,
+                    showlegend=False
+                ),
+                row=1, col=i
+            )
+    fig.update_layout(barmode='overlay', height=400)
+    st.plotly_chart(fig, use_container_width=True)
 
 def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
     if not columns_to_plot:
         st.write("No columns selected for correlation.")
         return
-    sub_df = df[columns_to_plot].dropna(axis=0, how='any')
+    sub_df = df[columns_to_plot].dropna()
     if sub_df.shape[1] < 2:
         st.write("Not enough columns selected for correlation heatmap.")
         return
-    fig, ax = plt.subplots(figsize=(6, 4))
-    sns.heatmap(sub_df.corr(), annot=False, cmap='coolwarm', ax=ax, cbar_kws={"shrink": 0.8})
-    ax.set_title("Correlation Heatmap (Selected Columns)", fontsize=10)
-    plt.tight_layout()
-    st.pyplot(fig)
+    corr = sub_df.corr()
+    custom_colorscale = [[0, 'royalblue'], [0.5, 'white'], [1, 'tomato']]
+    fig = go.Figure(data=go.Heatmap(
+        z=corr.values,
+        x=corr.columns,
+        y=corr.index,
+        colorscale=custom_colorscale
+    ))
+    fig.update_layout(title="Correlation Heatmap (Selected Columns)", height=400)
+    st.plotly_chart(fig, use_container_width=True)
 
 def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFrame, columns: list):
-    """
-    Compare distributions of the given columns in the full dataset vs the window,
-    arranging the plots in a 2x4 grid.
-    (This graph is displayed at full width.)
-    """
+    # Guard against an empty columns list.
+    if not columns:
+        st.write("No columns selected for distribution comparison.")
+        return
+    
     n = len(columns)
-    rows = math.ceil(n/4)
-    fig, axs = plt.subplots(rows, 4, figsize=(16, 4*rows))
-    axs = axs.flatten()
-    for i, col in enumerate(columns):
-        ax = axs[i]
+    rows = math.ceil(n / 4)
+    fig = make_subplots(rows=rows, cols=4, subplot_titles=columns)
+    for i, col in enumerate(columns, start=1):
+        row = math.ceil(i / 4)
+        col_pos = i - (row - 1) * 4
+        
         if col in df_all.columns and pd.api.types.is_numeric_dtype(df_all[col]):
-            df_all[col].dropna().plot(kind='density', ax=ax, label='Overall', legend=False)
+            fig.add_trace(
+                go.Histogram(
+                    x=df_all[col].dropna(),
+                    histnorm='density',
+                    name='Overall',
+                    marker_color='royalblue',
+                    opacity=0.6,
+                    showlegend=(i == 1)
+                ),
+                row=row, col=col_pos
+            )
         if col in df_window.columns and pd.api.types.is_numeric_dtype(df_window[col]):
-            df_window[col].dropna().plot(kind='density', ax=ax, label='Window', legend=False)
-        ax.set_title(f'{col} Density', fontsize=10)
-        ax.legend(fontsize=8)
-    for j in range(i+1, len(axs)):
-        axs[j].set_visible(False)
-    plt.tight_layout()
-    st.pyplot(fig)
+            fig.add_trace(
+                go.Histogram(
+                    x=df_window[col].dropna(),
+                    histnorm='density',
+                    name='Window',
+                    marker_color='tomato',
+                    opacity=0.6,
+                    showlegend=(i == 1)
+                ),
+                row=row, col=col_pos
+            )
+        fig.update_xaxes(title_text=col, row=row, col=col_pos)
+    fig.update_layout(barmode='overlay', height=400 * rows)
+    st.plotly_chart(fig, use_container_width=True)
 
 def plot_feature_importances(model, feature_names):
     if not hasattr(model, 'feature_importances_'):
@@ -203,29 +234,104 @@ def plot_feature_importances(model, feature_names):
     sorted_idx = np.argsort(importances)
     sorted_features = [feature_names[i] for i in sorted_idx]
     sorted_importances = importances[sorted_idx]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.barh(sorted_features, sorted_importances, color='skyblue')
-    ax.set_xlabel("Importance", fontsize=10)
-    ax.set_title("Feature Importances (RandomForest)", fontsize=10)
-    plt.tight_layout()
-    st.pyplot(fig)
-
+    fig = px.bar(
+        x=sorted_importances,
+        y=sorted_features,
+        orientation='h',
+        labels={'x': 'Importance', 'y': 'Features'},
+        title="Feature Importances (RandomForest)",
+        color_discrete_sequence=['royalblue']
+    )
+    fig.update_layout(height=400)
+    st.plotly_chart(fig, use_container_width=True)
+    
 def plot_anomaly_detection_graph(df: pd.DataFrame, anomaly_cols: list):
     """
     For each column in anomaly_cols that has at least one anomaly in the dataframe,
-    plot the time series with normal values as a line and anomalies highlighted as red markers.
+    plot the time series with normal values as a line (in a distinct color)
+    and anomalies highlighted as markers (using the same distinct color with a black outline).
     Only variables with anomalies are plotted.
     """
-    fig = px.scatter()
-    for col in anomaly_cols:
+    fig = go.Figure()
+    omitted = []
+    colors = px.colors.qualitative.Plotly  # distinct colors for each variable
+    for i, col in enumerate(anomaly_cols):
         if not df[df[f"{col}_anomaly"]].empty:
+            color = colors[i % len(colors)]
             normal = df[~df[f"{col}_anomaly"]]
             anomalous = df[df[f"{col}_anomaly"]]
-            fig.add_scatter(x=normal['timestamp'], y=normal[col], mode='lines', name=f"{col} Normal")
-            fig.add_scatter(x=anomalous['timestamp'], y=anomalous[col], mode='markers',
-                            marker=dict(color='red', size=8), name=f"{col} Anomaly")
-    fig.update_layout(title="Anomaly Detection Over Time", height=300)
-    st.plotly_chart(fig, use_container_width=True)
+            fig.add_trace(
+                go.Scatter(
+                    x=normal['timestamp'], y=normal[col],
+                    mode='lines',
+                    name=f"{col} Normal",
+                    line=dict(color=color)
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=anomalous['timestamp'], y=anomalous[col],
+                    mode='markers',
+                    name=f"{col} Anomaly",
+                    marker=dict(color=color, size=10, symbol="x", line=dict(width=1, color='black'))
+                )
+            )
+        else:
+            omitted.append(col)
+    if omitted:
+        st.warning(f"The following variables do not have anomalies and are not displayed: {', '.join(omitted)}")
+    if fig.data:
+        fig.update_layout(title="Anomaly Detection Over Time", height=300)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No anomalies detected in the selected variables.")
+
+def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+    fig = make_subplots(rows=2, cols=4, subplot_titles=features)
+    row_col_map = [(1,1), (1,2), (1,3), (1,4), (2,1), (2,2), (2,3), (2,4)]
+    for i, feat in enumerate(features):
+        row, col = row_col_map[i]
+        anom_col = f"{feat}_anomaly"
+        mask_anom = df.get(anom_col, False)
+        # Plot the normal values in royal blue.
+        fig.add_trace(
+            go.Scatter(
+                x=df["timestamp"],
+                y=df[feat],
+                mode="lines",
+                name=f"{feat} (all)",
+                line=dict(color="royalblue")
+            ),
+            row=row, col=col
+        )
+        # Plot anomalies in tomato with a black outline.
+        df_anom = df[mask_anom]
+        if not df_anom.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=df_anom["timestamp"],
+                    y=df_anom[feat],
+                    mode="markers",
+                    name=f"{feat} (anomaly)",
+                    marker=dict(color="tomato", size=10, symbol="x", line=dict(color="black", width=1))
+                ),
+                row=row, col=col
+            )
+    for axis_name in fig.layout:
+        if axis_name.startswith("xaxis"):
+            fig.layout[axis_name].rangebreaks = [dict(pattern="day of week", bounds=["sat", "sun"])]
+            fig.layout[axis_name].type = "date"
+    fig.update_layout(
+        autosize=False,
+        width=1200,
+        height=400,
+        showlegend=False,
+        title_text="Key Variables (Sliding Window, Skip Weekends)",
+        margin=dict(l=20, r=20, t=50, b=20)
+    )
+    st.plotly_chart(fig, use_container_width=False)
+
 
 ###############################################################################
 # 5) Anomaly Detection: Z-Score on the Top 8 Features
@@ -270,7 +376,6 @@ def compute_performance_metrics(df: pd.DataFrame, target_col: str = "moisture_in
     mape_val = np.mean(np.abs((y_true - y_pred) / np.where(y_true != 0, y_true, 1))) * 100
     return {"mse": mse_val, "mae": mae_val, "mape": mape_val, "r2": r2_val}
 
-
 def get_top_n_features(model, feature_names, n=8):
     """Return top-n features based on feature_importances_, descending."""
     if not hasattr(model, 'feature_importances_'):
@@ -281,55 +386,9 @@ def get_top_n_features(model, feature_names, n=8):
     return [feature_names[i] for i in top_indices]
 
 ###############################################################################
-# 6c) Key Variables Plot: (unchanged here)
+# 6c) Key Variables Plot: (unchanged here, updated above)
 ###############################################################################
-def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
-    """
-    Creates a 2×4 Plotly subplot layout for the given features:
-      - Shows a continuous line for all data in the slice (normal+anomaly),
-      - Overlays anomaly points in red "X",
-      - Removes weekends from the x-axis using pattern-based rangebreaks.
-    """
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
-    fig = make_subplots(rows=2, cols=4, subplot_titles=features)
-    row_col_map = [(1,1), (1,2), (1,3), (1,4), (2,1), (2,2), (2,3), (2,4)]
-    for i, feat in enumerate(features):
-        row, col = row_col_map[i]
-        anom_col = f"{feat}_anomaly"
-        mask_anom = df.get(anom_col, False)
-        fig.add_trace(
-            go.Scatter(
-                x=df["timestamp"],
-                y=df[feat],
-                mode="lines",
-                name=f"{feat} (all)"
-            ),
-            row=row, col=col
-        )
-        df_anom = df[mask_anom]
-        fig.add_trace(
-            go.Scatter(
-                x=df_anom["timestamp"],
-                y=df_anom[feat],
-                mode="markers",
-                name=f"{feat} (anomaly)",
-                marker=dict(color="red", size=6, symbol="x")
-            ),
-            row=row, col=col
-        )
-    for axis_name in fig.layout:
-        if axis_name.startswith("xaxis"):
-            fig.layout[axis_name].rangebreaks = [dict(pattern="day of week", bounds=["sat", "sun"])]
-            fig.layout[axis_name].type = "date"
-    fig.update_layout(
-        autosize=False,
-        width=1200,
-        height=400,
-        showlegend=False,
-        title_text="Key Variables (Sliding Window, Skip Weekends)",
-        margin=dict(l=20, r=20, t=50, b=20)
-    )
-    st.plotly_chart(fig, use_container_width=False)
+# (Using plot_features_2x4_subplots_anomaly defined above)
 
 ###############################################################################
 # 8) Data Exploration Fragment (Modified)
@@ -505,7 +564,6 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         desired_order.append('moisture_in_z0')
     if 'predicted_moisture' in cols:
         desired_order.append('predicted_moisture')
-    # Append any remaining columns.
     for col in cols:
         if col not in desired_order:
             desired_order.append(col)
@@ -556,7 +614,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
             return ["" for _ in row]
     
     df_last5 = df_ana.sort_values('timestamp').tail(5)
-    # Reorder columns: keep 'timestamp' first, then 'moisture_in_z0' and 'predicted_moisture' as second and third.
     cols = list(df_last5.columns)
     desired_order = []
     if 'timestamp' in cols:
@@ -565,7 +622,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         desired_order.append('moisture_in_z0')
     if 'predicted_moisture' in cols:
         desired_order.append('predicted_moisture')
-    # Append any remaining columns.
     for col in cols:
         if col not in desired_order:
             desired_order.append(col)
@@ -594,7 +650,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         st.warning("Top features are not computed yet. Please start streaming to compute top features.")
     else:
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
-
 
 ###############################################################################
 # 12) Model Performance Tab (Now Includes Key Variables)
@@ -626,28 +681,29 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     
     col1, col2 = st.columns(2)
     
-    # Full Dataset Metrics with hierarchical sizes
+    # Full Dataset Metrics with hierarchical sizes and fixed colors:
     with col1:
         st.markdown("<h1>Full Dataset Metrics</h1>", unsafe_allow_html=True)
         if full_metrics["mse"] is None:
             st.write("No valid rows for full-dataset metric computation.")
         else:
-            st.markdown(f"<h2 style='color:red;'>MAE (Full): {full_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
-            st.markdown(f"<h2 style='color:red;'>MAPE (Full): {full_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
-            st.markdown(f"<h3>MSE (Full): {full_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<h3>R² (Full): {full_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:tomato;'>MAE (Full): {full_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:tomato;'>MAPE (Full): {full_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color:royalblue;'>MSE (Full): {full_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color:royalblue;'>R² (Full): {full_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
     
-    # Sliding Window Metrics with hierarchical sizes
+    # Sliding Window Metrics with hierarchical sizes and fixed colors:
     with col2:
         st.markdown("<h1>Sliding Window Metrics</h1>", unsafe_allow_html=True)
         if window_metrics["mse"] is None:
             st.write("No valid rows in the sliding window for metric computation.")
         else:
-            st.markdown(f"<h2 style='color:red;'>MAE (Window): {window_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
-            st.markdown(f"<h2 style='color:red;'>MAPE (Window): {window_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
-            st.markdown(f"<h3>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<h3>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:tomato;'>MAE (Window): {window_metrics['mae']:.4f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='color:tomato;'>MAPE (Window): {window_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color:royalblue;'>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
+            st.markdown(f"<h3 style='color:royalblue;'>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
     
+    # Full Dataset: Actual vs. Predicted plot with fixed color sequence.
     st.markdown("### Full Dataset: Actual vs. Predicted")
     if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
         st.write("No valid predictions for full dataset.")
@@ -657,11 +713,13 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             x="timestamp",
             y=["moisture_in_z0", "predicted_moisture_full"],
             labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Full Dataset: Actual vs. Predicted Moisture"
+            title="Full Dataset: Actual vs. Predicted Moisture",
+            color_discrete_sequence=["royalblue", "tomato"]
         )
         fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_full, use_container_width=True)
     
+    # Sliding Window: Actual vs. Predicted plot with fixed color sequence.
     st.markdown("### Sliding Window: Actual vs. Predicted")
     if df_window_preds["predicted_moisture"].dropna().empty:
         st.write("No valid predictions for the sliding window.")
@@ -671,7 +729,8 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             x="timestamp",
             y=["moisture_in_z0", "predicted_moisture"],
             labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Sliding Window: Actual vs. Predicted Moisture"
+            title="Sliding Window: Actual vs. Predicted Moisture",
+            color_discrete_sequence=["royalblue", "tomato"]
         )
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
@@ -679,6 +738,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
+
         
 def predictions_tab_controller(df_all: pd.DataFrame):
     st.sidebar.header("⚙️ Configuration")
@@ -774,7 +834,6 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
 
-
 ###############################################################################
 # 13) Main App
 ###############################################################################
@@ -810,8 +869,7 @@ def main():
             st.session_state.model = model
             st.session_state.model_mse = mse
     if st.session_state.model is not None:
-        mse_value = round(st.session_state.model_mse, 2)
-        st.markdown(f"<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
+        st.markdown("<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
     else:
         st.warning("Not enough data to train the model.")
     feature_columns = [
