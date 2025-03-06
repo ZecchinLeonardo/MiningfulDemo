@@ -1032,9 +1032,9 @@ def main():
     if "df_main_anomalies" not in st.session_state:
         max_ts = df_all["timestamp"].max()
         default_window = df_all[df_all["timestamp"] >= max_ts - pd.Timedelta(hours=1)]
-        st.session_state["df_main_anomalies"] = predict(st.session_state.model, default_window)
         window_duration = st.session_state.get("window_duration", 1.0)
         default_window = get_sliding_window_data(df_all, timedelta(0), window_duration)
+        st.session_state["df_main_anomalies"] = predict(st.session_state.model, default_window)
     
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
