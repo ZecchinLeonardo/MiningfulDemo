@@ -119,14 +119,28 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
 
 def plot_timeseries_with_prediction_interactive(
     df: pd.DataFrame, 
+    model, 
+    feature_columns, 
     time_col='timestamp',
     actual_col='moisture_in_z0',
-    predicted_col='predicted_moisture'
+    predicted_col='predicted_moisture',
+    forecast=False
 ):
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
-    df_filtered = df.dropna(subset=[predicted_col])
+
+    df_filtered = df.dropna(subset=[predicted_col]).copy()
+    
+    # Compute threshold: max(actual moisture) in the last hour + 5%
+    time_cutoff = df_filtered[time_col].max() - pd.Timedelta(hours=1)
+    recent_data = df_filtered[df_filtered[time_col] >= time_cutoff]
+    if not recent_data.empty:
+        threshold = recent_data[actual_col].max() * 1.05
+    else:
+        threshold = None
+
+    # Create basic actual vs. predicted line plot.
     fig = px.line(
         df_filtered,
         x=time_col,
@@ -135,8 +149,71 @@ def plot_timeseries_with_prediction_interactive(
         title="Actual vs. Predicted Moisture Over Time",
         color_discrete_sequence=["royalblue", "tomato"]
     )
+    
+    if forecast and model is not None and feature_columns:
+        # Generate forecast times: every 10 seconds for 2 minutes.
+        last_time = df_filtered[time_col].max()
+        forecast_times = pd.date_range(start=last_time, end=last_time + pd.Timedelta(minutes=2), freq="10S")
+        # Use the last row's features as baseline.
+        last_row = df_filtered.iloc[-1]
+        forecast_features = last_row[feature_columns].to_frame().T
+        baseline_prediction = model.predict(forecast_features)[0]
+        # Compute trend (slope) from actual moisture in the last hour.
+        if not recent_data.empty:
+            time_diff = (recent_data[time_col].iloc[-1] - recent_data[time_col].iloc[0]).total_seconds()
+            if time_diff != 0:
+                slope = (recent_data[actual_col].iloc[-1] - recent_data[actual_col].iloc[0]) / time_diff
+            else:
+                slope = 0
+        else:
+            slope = 0
+
+        # Create a forecast series by adjusting the baseline by the trend.
+        forecast_values = []
+        for t in forecast_times:
+            delta_sec = (t - last_time).total_seconds()
+            forecast_values.append(baseline_prediction + slope * delta_sec)
+
+        # Add the forecast trace (dashed line + markers).
+        fig.add_trace(
+            go.Scatter(
+                x=forecast_times,
+                y=forecast_values,
+                mode='lines+markers',
+                name="Forecast",
+                line=dict(color="tomato", dash="dot"),
+                marker=dict(color="tomato", size=8)
+            )
+        )
+        # Append forecast points to df_filtered for threshold checking.
+        df_forecast = pd.DataFrame({time_col: forecast_times, predicted_col: forecast_values})
+        df_filtered = pd.concat([df_filtered, df_forecast], ignore_index=True)
+    
+    if threshold is not None:
+        fig.add_hline(
+            y=threshold,
+            line_color="rgba(128,128,128,0.3)",
+            line_dash="dot",
+            line_width=2,
+            annotation_text="Threshold",
+            annotation_position="bottom right"
+        )
+        unacceptable = df_filtered[df_filtered[actual_col] > threshold]
+        if not unacceptable.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=unacceptable[time_col],
+                    y=unacceptable[actual_col],
+                    mode='markers',
+                    marker=dict(color='red', size=12, symbol='x'),
+                    name="Unacceptable"
+                )
+            )
+    
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
+
+
 
 ###############################################################################
 # 4) Data Exploration & Visualization
@@ -552,7 +629,14 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         else:
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
-        plot_timeseries_with_prediction_interactive(df_ana)
+        forecast_toggle = st.checkbox("Forecast next 2 minutes", key="forecast_toggle", value=False)
+        plot_timeseries_with_prediction_interactive(
+            df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
+            model=st.session_state.get("model", None),
+            feature_columns=st.session_state.get("feature_columns", []),
+            forecast=forecast_toggle
+        )
+        
     
     # NEW: Add Key Variables (Sliding Window) below the predictions.
     st.markdown("### Key Variables (Sliding Window)")
@@ -610,7 +694,14 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         else:
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
-        plot_timeseries_with_prediction_interactive(df_ana)
+        forecast_toggle = st.checkbox("Forecast next 2 minutes", key="forecast_toggle", value=False)
+        plot_timeseries_with_prediction_interactive(
+            df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
+            model=st.session_state.get("model", None),
+            feature_columns=st.session_state.get("feature_columns", []),
+            forecast=forecast_toggle
+        )
+
     
     st.markdown("### Key Variables (Sliding Window)")
     if not top_features:
@@ -906,18 +997,22 @@ def main():
     )
     st.image("res/Miningful_NoBG_WhiteText.png", width=120)
     st.markdown("### Miningful Predictive Maintenance Demo")
+    
     if "stream_data" not in st.session_state:
         st.session_state.stream_data = load_data_remote()
     df_all = st.session_state.stream_data
+    
     if "model" not in st.session_state:
         with st.spinner("Training model..."):
             model, mse = train_model(df_all)
             st.session_state.model = model
             st.session_state.model_mse = mse
+            
     if st.session_state.model is not None:
         st.markdown("<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
     else:
         st.warning("Not enough data to train the model.")
+        
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
@@ -928,14 +1023,25 @@ def main():
         'temp_in_z9', 'temp_out_z9'
     ]
     st.session_state.feature_columns = feature_columns
-    # Pre-compute top features so that key variables and other sections render immediately.
+    
+    # Precompute the top features (global remains 8).
     if st.session_state.model is not None:
         st.session_state.top_features = get_top_n_features(st.session_state.model, feature_columns, n=8)
+    
+    # Precompute a default prediction dataframe if none exists.
+    if "df_main_anomalies" not in st.session_state:
+        max_ts = df_all["timestamp"].max()
+        default_window = df_all[df_all["timestamp"] >= max_ts - pd.Timedelta(hours=1)]
+        st.session_state["df_main_anomalies"] = predict(st.session_state.model, default_window)
+        window_duration = st.session_state.get("window_duration", 1.0)
+        default_window = get_sliding_window_data(df_all, timedelta(0), window_duration)
+    
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
-    # Remove Key Variables tab; now we have only three tabs.
+
+    # Create tabs for Predictions, Model Performance, and Data Exploration.
     tab1, tab2, tab3 = st.tabs(["Predictions", "Model Performance", "Data Exploration"])
     with tab1:
         predictions_tab_controller(df_all)
