@@ -250,44 +250,38 @@ def plot_feature_importances(model, feature_names):
     
 def plot_anomaly_detection_graph(df: pd.DataFrame, anomaly_cols: list):
     """
-    For each column in anomaly_cols that has at least one anomaly in the dataframe,
-    plot the time series with normal values as a line (in a distinct color)
-    and anomalies highlighted as markers (using the same distinct color with a black outline).
-    Only variables with anomalies are plotted.
+    For each column in anomaly_cols, plot the time series with normal values as a line
+    (in a distinct color) and anomalies highlighted as markers (using the same color with a black outline).
+    All selected variables are displayed.
     """
     fig = go.Figure()
-    omitted = []
-    colors = px.colors.qualitative.Plotly  # distinct colors for each variable
+    colors = px.colors.qualitative.Plotly  # distinct colors from Plotly palette
     for i, col in enumerate(anomaly_cols):
-        if not df[df[f"{col}_anomaly"]].empty:
-            color = colors[i % len(colors)]
-            normal = df[~df[f"{col}_anomaly"]]
-            anomalous = df[df[f"{col}_anomaly"]]
-            fig.add_trace(
-                go.Scatter(
-                    x=normal['timestamp'], y=normal[col],
-                    mode='lines',
-                    name=f"{col} Normal",
-                    line=dict(color=color)
-                )
+        color = colors[i % len(colors)]
+        normal = df[~df[f"{col}_anomaly"]]
+        anomalous = df[df[f"{col}_anomaly"]]
+        fig.add_trace(
+            go.Scatter(
+                x=normal['timestamp'], 
+                y=normal[col],
+                mode='lines',
+                name=f"{col} Normal",
+                line=dict(color=color)
             )
-            fig.add_trace(
-                go.Scatter(
-                    x=anomalous['timestamp'], y=anomalous[col],
-                    mode='markers',
-                    name=f"{col} Anomaly",
-                    marker=dict(color=color, size=10, symbol="x", line=dict(width=1, color='black'))
-                )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=anomalous['timestamp'], 
+                y=anomalous[col],
+                mode='markers',
+                name=f"{col} Anomaly",
+                marker=dict(color=color, size=10, symbol="x", line=dict(width=1, color='black'))
             )
-        else:
-            omitted.append(col)
-    if omitted:
-        st.warning(f"The following variables do not have anomalies and are not displayed: {', '.join(omitted)}")
-    if fig.data:
-        fig.update_layout(title="Anomaly Detection Over Time", height=300)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No anomalies detected in the selected variables.")
+        )
+    fig.update_layout(title="Anomaly Detection Over Time", height=300)
+    st.plotly_chart(fig, use_container_width=True)
+
+
 
 def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
@@ -501,38 +495,6 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         )
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
 
-    # ─────────────────────────────────────────────────────────
-    #  3) ANOMALY DETECTION (WINDOW) - BELOW
-    # ─────────────────────────────────────────────────────────
-    if "Anomaly Detection (Window)" in selected_analyses:
-        st.write("### Anomaly Detection (Current Window)")
-        with st.form("anomaly_form"):
-            numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
-            default_anomaly = (
-                default_top_features 
-                if default_top_features and len(default_top_features) > 0 
-                else (numeric_cols[:1] if numeric_cols else [])
-            )
-            selected_anomaly_cols = st.multiselect(
-                "Columns to analyze for anomalies (Z-score):",
-                numeric_cols,
-                default=default_anomaly
-            )
-            z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
-            update_button = st.form_submit_button("Update Anomalies")
-
-        if update_button and selected_anomaly_cols:
-            anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
-            anomaly_rate = anomalies_df['any_anomaly'].mean()
-            st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
-            anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
-            if not anomaly_rows.empty:
-                st.write("**Anomalous rows (up to 20 displayed)**:")
-                st.dataframe(anomaly_rows.head(20))
-            else:
-                st.write("No anomalies found with current threshold and columns.")
-            # Produce a graph for anomaly detection.
-            plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
 
 ###############################################################################
 # 9) Predictions Tab (Streaming & Paused, Sliding Window)
@@ -664,16 +626,16 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if model is None:
         st.warning("No trained model available. Please train the model first.")
         return
+    # Full dataset predictions and metrics.
     df_all_preds = predict(model, df_all)
-    df_all_preds.rename(
-        columns={"predicted_moisture": "predicted_moisture_full"}, 
-        inplace=True
-    )
+    df_all_preds.rename(columns={"predicted_moisture": "predicted_moisture_full"}, inplace=True)
     full_metrics = compute_performance_metrics(
         df_all_preds, 
         target_col="moisture_in_z0", 
         pred_col="predicted_moisture_full"
     )
+    
+    # Sliding window predictions and metrics.
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
@@ -686,9 +648,8 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     
     col1, col2 = st.columns(2)
     
-    # Full Dataset Metrics with hierarchical sizes and fixed colors:
     with col1:
-        st.markdown("<h1>Full Dataset Metrics</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='color:darkblue;'>Full Dataset Metrics</h1>", unsafe_allow_html=True)
         if full_metrics["mse"] is None:
             st.write("No valid rows for full-dataset metric computation.")
         else:
@@ -697,9 +658,8 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.markdown(f"<h3 style='color:royalblue;'>MSE (Full): {full_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color:royalblue;'>R² (Full): {full_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
     
-    # Sliding Window Metrics with hierarchical sizes and fixed colors:
     with col2:
-        st.markdown("<h1>Sliding Window Metrics</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='color:darkblue;'>Sliding Window Metrics</h1>", unsafe_allow_html=True)
         if window_metrics["mse"] is None:
             st.write("No valid rows in the sliding window for metric computation.")
         else:
@@ -708,7 +668,6 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.markdown(f"<h3 style='color:royalblue;'>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color:royalblue;'>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
     
-    # Full Dataset: Actual vs. Predicted plot with fixed color sequence.
     st.markdown("### Full Dataset: Actual vs. Predicted")
     if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
         st.write("No valid predictions for full dataset.")
@@ -724,7 +683,6 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_full, use_container_width=True)
     
-    # Sliding Window: Actual vs. Predicted plot with fixed color sequence.
     st.markdown("### Sliding Window: Actual vs. Predicted")
     if df_window_preds["predicted_moisture"].dropna().empty:
         st.write("No valid predictions for the sliding window.")
@@ -740,9 +698,40 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
     
+    st.write("### Anomaly Detection (Current Window)")
+    with st.form("anomaly_form"):
+        numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
+        default_top_features = st.session_state.get("top_features", None)
+        default_anomaly = (
+            default_top_features[:4]
+            if default_top_features and len(default_top_features) >= 4
+            else (default_top_features if default_top_features else (numeric_cols[:1] if numeric_cols else []))
+        )
+        selected_anomaly_cols = st.multiselect(
+            "Columns to analyze for anomalies (Z-score):",
+            numeric_cols,
+            default=default_anomaly
+        )
+        z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
+        update_button = st.form_submit_button("Update Anomalies")
+
+    if update_button and selected_anomaly_cols:
+        anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
+        anomaly_rate = anomalies_df['any_anomaly'].mean()
+        st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
+        anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
+        if not anomaly_rows.empty:
+            st.write("**Anomalous rows (up to 20 displayed)**:")
+            st.dataframe(anomaly_rows.head(20))
+        else:
+            st.write("No anomalies found with current threshold and columns.")
+        # Produce a graph for anomaly detection.
+        plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
+        
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
+
 
         
 def predictions_tab_controller(df_all: pd.DataFrame):
