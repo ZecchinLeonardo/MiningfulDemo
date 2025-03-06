@@ -602,12 +602,12 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
     # Reorder columns: keep 'timestamp' first, then 'moisture_in_z0' and 'predicted_moisture' as second and third.
     cols = list(df_last5.columns)
     desired_order = []
-    if 'timestamp' in cols:
-        desired_order.append('timestamp')
     if 'moisture_in_z0' in cols:
         desired_order.append('moisture_in_z0')
     if 'predicted_moisture' in cols:
         desired_order.append('predicted_moisture')
+    if 'timestamp' in cols:
+        desired_order.append('timestamp')
     for col in cols:
         if col not in desired_order:
             desired_order.append(col)
@@ -667,12 +667,12 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     df_last5 = df_ana.sort_values('timestamp').tail(5)
     cols = list(df_last5.columns)
     desired_order = []
-    if 'timestamp' in cols:
-        desired_order.append('timestamp')
     if 'moisture_in_z0' in cols:
         desired_order.append('moisture_in_z0')
     if 'predicted_moisture' in cols:
         desired_order.append('predicted_moisture')
+    if 'timestamp' in cols:
+        desired_order.append('timestamp')
     for col in cols:
         if col not in desired_order:
             desired_order.append(col)
