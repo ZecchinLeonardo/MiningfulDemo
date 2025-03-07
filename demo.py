@@ -81,8 +81,7 @@ from tensorflow.keras.layers import LSTM, Dense
 
 def train_lstm_model(df: pd.DataFrame, feature_columns: list, target_column: str, sequence_length: int, forecast_steps: int):
     """
-    Trains an LSTM model to forecast the next `forecast_steps` values (e.g., over 2 minutes)
-    using a sliding window of `sequence_length` time steps.
+    Trains an LSTM model to forecast the next `forecast_steps` values using a sliding window of `sequence_length` time steps.
     """
     df_seq = df.dropna(subset=feature_columns + [target_column]).copy()
     df_seq.sort_values("timestamp", inplace=True)
@@ -96,8 +95,10 @@ def train_lstm_model(df: pd.DataFrame, feature_columns: list, target_column: str
          return None
     X = np.array(X)
     y = np.array(y)
-    model = Sequential([
-         LSTM(50, activation='relu', input_shape=(sequence_length, len(feature_columns))),
+    # Use an explicit Input layer to avoid warnings about input_shape
+    model = tf.keras.Sequential([
+         tf.keras.Input(shape=(sequence_length, len(feature_columns))),
+         LSTM(50, activation='relu'),
          Dense(forecast_steps)
     ])
     model.compile(optimizer='adam', loss='mse')
@@ -198,15 +199,21 @@ def plot_timeseries_with_prediction_interactive(
             st.session_state.lstm_model, df_filtered, feature_columns, sequence_length=10, forecast_steps=forecast_steps
         )
         if forecast_values is not None:
-            forecast_times = pd.date_range(start=last_time, periods=forecast_steps+1, freq="10S")[1:]
+            # Clamp any forecast value below 0 to 0
+            forecast_values = [max(0, val) for val in forecast_values]
+            # Prepend the last actual moisture value to connect the forecast line with the current series
+            last_value = df_filtered[actual_col].iloc[-1]
+            forecast_values = [last_value] + forecast_values
+            # Use the length of forecast_values to generate the time index
+            forecast_length = len(forecast_values)
+            forecast_times = pd.date_range(start=last_time, periods=forecast_length, freq="10S")
             fig.add_trace(
                 go.Scatter(
                     x=forecast_times,
                     y=forecast_values,
-                    mode='lines+markers',
+                    mode='lines',  # just a dotted line with no markers
                     name="Forecast (LSTM)",
-                    line=dict(color="tomato", dash="dot"),
-                    marker=dict(color="tomato", size=8)
+                    line=dict(color="tomato", dash="dot")
                 )
             )
             df_forecast = pd.DataFrame({time_col: forecast_times, predicted_col: forecast_values})
