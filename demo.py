@@ -830,9 +830,13 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         if fixed_end_datetime <= fixed_start_datetime:
             st.sidebar.error("End datetime must be after start datetime.")
         if st.sidebar.button("🔄 Retrain Model"):
-            retrain_data = df_all[
-                (df_all['timestamp'] >= fixed_start_datetime) & 
-                (df_all['timestamp'] <= fixed_end_datetime)
+            # Convert timestamp column to naive datetime for filtering
+            df_all_naive = df_all.copy()
+            if isinstance(df_all_naive['timestamp'].dtype, pd.DatetimeTZDtype):
+                df_all_naive['timestamp'] = df_all_naive['timestamp'].dt.tz_convert(None)
+            retrain_data = df_all_naive[
+                (df_all_naive['timestamp'] >= fixed_start_datetime) &
+                (df_all_naive['timestamp'] <= fixed_end_datetime)
             ].copy()
             if retrain_data.empty:
                 st.sidebar.error("No data available in the selected window for retraining.")
@@ -846,6 +850,7 @@ def predictions_tab_controller(df_all: pd.DataFrame):
                         st.success(f"Model retrained on data from {fixed_start_datetime} to {fixed_end_datetime}. MSE: {new_mse:.4f}")
                     else:
                         st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
+
     else:
         st.sidebar.write("Polling interval: 3s (fixed)")
 
