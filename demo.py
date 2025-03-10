@@ -11,7 +11,6 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import math
-
 import os
 import boto3
 from io import StringIO
@@ -72,61 +71,14 @@ def train_model(df: pd.DataFrame):
     mse = mean_squared_error(y_test, predictions)
     return model, mse
 
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-
-
-# ----------------------- LSTM Model Functions ------------------------------
-
-def train_lstm_model(df: pd.DataFrame, feature_columns: list, target_column: str, sequence_length: int, forecast_steps: int):
-    """
-    Trains an LSTM model to forecast the next `forecast_steps` values using a sliding window of `sequence_length` time steps.
-    """
-    df_seq = df.dropna(subset=feature_columns + [target_column]).copy()
-    df_seq.sort_values("timestamp", inplace=True)
-    data = df_seq[feature_columns].values
-    target = df_seq[target_column].values
-    X, y = [], []
-    for i in range(len(df_seq) - sequence_length - forecast_steps + 1):
-         X.append(data[i:i+sequence_length])
-         y.append(target[i+sequence_length:i+sequence_length+forecast_steps])
-    if not X:
-         return None
-    X = np.array(X)
-    y = np.array(y)
-    # Use an explicit Input layer to avoid warnings about input_shape
-    model = tf.keras.Sequential([
-         tf.keras.Input(shape=(sequence_length, len(feature_columns))),
-         LSTM(50, activation='relu'),
-         Dense(forecast_steps)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=10, batch_size=32, verbose=0)
-    return model
-
-def predict_lstm_forecast(lstm_model, data_window: pd.DataFrame, feature_columns: list, sequence_length: int, forecast_steps: int):
-    """
-    Given the latest `sequence_length` rows from data_window, this function returns a forecast
-    for the next `forecast_steps` values of the target variable.
-    """
-    data_window = data_window.sort_values("timestamp")
-    if len(data_window) < sequence_length:
-         return None
-    last_sequence = data_window[feature_columns].tail(sequence_length).values
-    forecast = lstm_model.predict(last_sequence[np.newaxis, :, :])
-    # forecast has shape (1, forecast_steps)
-    return forecast.flatten().tolist()
-
-
 ###############################################################################
-# NEW: Sliding Window Helper (Fixed Start + Evolving Offset)
+# 3) Sliding Window Helper
 ###############################################################################
 def get_sliding_window_data(df: pd.DataFrame, offset: timedelta, window_duration_hours: float) -> pd.DataFrame:
     """
     Returns the data between:
       window_start = FIXED_START_TIME + offset 
-      window_end   = window_start + (window_duration_hours)
+      window_end   = window_start + window_duration (in hours)
     """
     window_start = FIXED_START_TIME + offset
     window_end = window_start + timedelta(hours=window_duration_hours)
@@ -137,7 +89,7 @@ def get_sliding_window_data(df: pd.DataFrame, offset: timedelta, window_duration
     return df[(ts >= window_start) & (ts <= window_end)]
 
 ###############################################################################
-# 3) Prediction & Plotting Utilities
+# 4) Prediction & Plotting Utilities
 ###############################################################################
 def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     """Use the model to predict 'predicted_moisture' from feature columns."""
@@ -191,34 +143,41 @@ def plot_timeseries_with_prediction_interactive(
         color_discrete_sequence=["royalblue", "tomato"]
     )
     
-    # Forecast next 2 minutes using LSTM if toggled.
-    if forecast and "lstm_model" in st.session_state:
-        last_time = df_filtered[time_col].max()
-        forecast_steps = 12  # assuming a forecast interval of 10 seconds for 2 minutes
-        forecast_values = predict_lstm_forecast(
-            st.session_state.lstm_model, df_filtered, feature_columns, sequence_length=10, forecast_steps=forecast_steps
-        )
-        if forecast_values is not None:
-            # Clamp any forecast value below 0 to 0
-            forecast_values = [max(0, val) for val in forecast_values]
-            # Prepend the last actual moisture value to connect the forecast line with the current series
-            last_value = df_filtered[actual_col].iloc[-1]
-            forecast_values = [last_value] + forecast_values
-            # Use the length of forecast_values to generate the time index
-            forecast_length = len(forecast_values)
-            forecast_times = pd.date_range(start=last_time, periods=forecast_length, freq="10S")
-            fig.add_trace(
-                go.Scatter(
-                    x=forecast_times,
-                    y=forecast_values,
-                    mode='lines',  # just a dotted line with no markers
-                    name="Forecast (LSTM)",
-                    line=dict(color="tomato", dash="dot")
-                )
+    # Forecast next 2 minutes using future data from simulated datastream
+    if forecast:
+        # Calculate the forecast window: starting at current window end and lasting 2 minutes (2/60 hours)
+        if ("current_offset" in st.session_state and 
+            "window_duration" in st.session_state and 
+            "stream_data" in st.session_state):
+            
+            # Convert window_duration (float in hours) to a timedelta
+            future_offset = st.session_state.current_offset + timedelta(hours=st.session_state.window_duration)
+            forecast_window = get_sliding_window_data(
+                st.session_state.stream_data, 
+                future_offset, 
+                2/60  # 2 minutes in hours
             )
-            df_forecast = pd.DataFrame({time_col: forecast_times, predicted_col: forecast_values})
-            df_filtered = pd.concat([df_filtered, df_forecast], ignore_index=True)
-    
+            forecast_window_adjusted = apply_future_feature_adjustments(forecast_window)
+            forecast_window_pred = predict(model, forecast_window_adjusted)
+            if not forecast_window_pred.empty and not forecast_window_pred[predicted_col].dropna().empty:
+                last_time = df_filtered[time_col].max()
+                last_value = df_filtered[actual_col].iloc[-1]
+                # Prepend the last actual value to connect the forecast with the current series
+                forecast_df = forecast_window_pred.dropna(subset=[predicted_col]).copy()
+                forecast_df = pd.concat([
+                    pd.DataFrame({time_col: [last_time], predicted_col: [last_value]}),
+                    forecast_df
+                ])
+                fig.add_trace(
+                    go.Scatter(
+                        x=forecast_df[time_col],
+                        y=forecast_df[predicted_col],
+                        mode='lines',
+                        name="Forecast (2 min)",
+                        line=dict(color="tomato", dash="dot")
+                    )
+                )
+
     if threshold is not None:
         fig.add_hline(
             y=threshold,
@@ -243,7 +202,6 @@ def plot_timeseries_with_prediction_interactive(
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-# (The remaining plotting and utility functions remain unchanged)
 def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
     if not columns_to_plot:
         st.write("No columns selected.")
@@ -372,7 +330,7 @@ def plot_anomaly_detection_graph(df: pd.DataFrame, anomaly_cols: list):
                 y=anomalous[col],
                 mode='markers',
                 name=f"{col} Anomaly",
-                marker=dict(color=color, size=10, symbol="x", line=dict(width=1, color='black'))
+                marker=dict(color=color, size=10, symbol='x', line=dict(width=1, color='black'))
             )
         )
     fig.update_layout(title="Anomaly Detection Over Time", height=300)
@@ -460,6 +418,27 @@ def get_top_n_features(model, feature_names, n=8):
     top_indices = indices_desc[:n]
     return [feature_names[i] for i in top_indices]
 
+def apply_feature_adjustments_to_window(data_window: pd.DataFrame) -> pd.DataFrame:
+    adjusted_df = data_window.copy()
+    if "feature_adjustments" in st.session_state:
+        for feat, adj in st.session_state.feature_adjustments.items():
+            if feat in adjusted_df.columns:
+                adjusted_df[feat] = adjusted_df[feat] * (1 + adj / 100.0)
+    return adjusted_df
+
+def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
+    adjusted_df = data_window.copy()
+    adj_start = st.session_state.get("adjustment_start_time", adjusted_df["timestamp"].max())
+    if "feature_adjustments" in st.session_state:
+        for feat, adj in st.session_state.feature_adjustments.items():
+            if feat in adjusted_df.columns:
+                mask = adjusted_df["timestamp"] > adj_start
+                adjusted_df.loc[mask, feat] = adjusted_df.loc[mask, feat] * (1 + adj / 100.0)
+    return adjusted_df
+
+###############################################################################
+# 5) Data Exploration Tab
+###############################################################################
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     if "top_features" not in st.session_state or not st.session_state.top_features:
@@ -545,6 +524,9 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         )
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
 
+###############################################################################
+# 6) Predictions Tabs (Streaming and Paused)
+###############################################################################
 @fragment(run_every=3)
 def predictions_tab_streaming(df_all: pd.DataFrame):
     df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
@@ -593,13 +575,22 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         else:
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
-        forecast_toggle = st.checkbox("Forecast next 2 minutes", key="forecast_toggle", value=False)
+        # Read the forecast state from the query parameters (defaulting to False)
+        default_val = st.query_params.get("forecast_next", "False").lower() == "true"
+        forecast_toggle = st.checkbox(
+            "Forecast next 2 minutes",
+            key="forecast_next_checkbox",
+            value=default_val
+        )
+        # Update the query parameters so that the state is preserved in the URL
+        st.query_params.forecast_next = str(forecast_toggle)
         plot_timeseries_with_prediction_interactive(
             df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
             model=rf_model,
             feature_columns=st.session_state.get("feature_columns", []),
             forecast=forecast_toggle
         )
+
     
     st.markdown("### Key Variables (Sliding Window)")
     if not top_features:
@@ -608,6 +599,7 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
     
     st.session_state.current_offset += timedelta(seconds=10)
+
 
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
@@ -654,13 +646,23 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         else:
             st.write("No anomalies in the displayed records (top 8 features).")
     with col_right:
-        forecast_toggle = st.checkbox("Forecast next 2 minutes", key="forecast_toggle", value=False)
+        # Read the forecast state from the query parameters (defaulting to False)
+        default_val = st.query_params.get("forecast_next", "False").lower() == "true"
+        forecast_toggle = st.checkbox(
+            "Forecast next 2 minutes",
+            key="forecast_next_checkbox",
+            value=default_val
+        )
+        # Update the query parameters with the current checkbox state
+        st.query_params.forecast_next = str(forecast_toggle)
         plot_timeseries_with_prediction_interactive(
             df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
             model=rf_model,
             feature_columns=st.session_state.get("feature_columns", []),
             forecast=forecast_toggle
         )
+
+
     
     st.markdown("### Key Variables (Sliding Window)")
     if not top_features:
@@ -668,6 +670,11 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     else:
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
 
+
+
+###############################################################################
+# 7) Model Performance Tab
+###############################################################################
 @fragment(run_every=None)
 def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if model is None:
@@ -776,6 +783,9 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
 
+###############################################################################
+# 8) Predictions Tab Controller
+###############################################################################
 def predictions_tab_controller(df_all: pd.DataFrame):
     st.sidebar.header("⚙️ Configuration")
 
@@ -850,7 +860,6 @@ def predictions_tab_controller(df_all: pd.DataFrame):
                         st.success(f"Model retrained on data from {fixed_start_datetime} to {fixed_end_datetime}. MSE: {new_mse:.4f}")
                     else:
                         st.sidebar.error("Failed to retrain the model. Check if the selected window has sufficient data.")
-
     else:
         st.sidebar.write("Polling interval: 3s (fixed)")
 
@@ -899,26 +908,8 @@ def predictions_tab_controller(df_all: pd.DataFrame):
                 st.session_state.adjustment_start_time = current_max
             st.session_state.feature_adjustments = adjustments
 
-def apply_feature_adjustments_to_window(data_window: pd.DataFrame) -> pd.DataFrame:
-    adjusted_df = data_window.copy()
-    if "feature_adjustments" in st.session_state:
-        for feat, adj in st.session_state.feature_adjustments.items():
-            if feat in adjusted_df.columns:
-                adjusted_df[feat] = adjusted_df[feat] * (1 + adj / 100.0)
-    return adjusted_df
-
-def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
-    adjusted_df = data_window.copy()
-    adj_start = st.session_state.get("adjustment_start_time", adjusted_df["timestamp"].max())
-    if "feature_adjustments" in st.session_state:
-        for feat, adj in st.session_state.feature_adjustments.items():
-            if feat in adjusted_df.columns:
-                mask = adjusted_df["timestamp"] > adj_start
-                adjusted_df.loc[mask, feat] = adjusted_df.loc[mask, feat] * (1 + adj / 100.0)
-    return adjusted_df
-
 ###############################################################################
-# 14) Main App
+# 9) Main App
 ###############################################################################
 def main():
     st.markdown(
@@ -964,17 +955,6 @@ def main():
             st.session_state.model = model
             st.session_state.model_mse = mse
         
-    # Train the LSTM model for 2-minute (12 steps) forecasting
-    if "lstm_model" not in st.session_state:
-        with st.spinner("Training LSTM model..."):
-            st.session_state.lstm_model = train_lstm_model(
-                st.session_state.stream_data,
-                feature_columns=st.session_state.feature_columns,
-                target_column="moisture_in_z0",
-                sequence_length=10,
-                forecast_steps=12
-            )
-    
     if st.session_state.model is not None:
         st.markdown("<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
     else:
