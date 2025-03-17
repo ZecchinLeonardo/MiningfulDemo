@@ -378,7 +378,7 @@ def plot_features_2x4_subplots_anomaly(df: pd.DataFrame, features: list):
         title_text="Key Variables (Sliding Window, Skip Weekends)",
         margin=dict(l=20, r=20, t=50, b=20)
     )
-    st.plotly_chart(fig, use_container_width=False)
+    st.plotly_chart(fig, use_container_width=True)
 
 def detect_anomalies_for_features(df: pd.DataFrame, features: list, z_threshold=3.0) -> pd.DataFrame:
     df_out = df.copy()
@@ -545,7 +545,7 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
 
     def highlight_anomaly_row(row):
         return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
-    
+
     df_last5 = df_ana.sort_values('timestamp').tail(5)
     cols = list(df_last5.columns)
     desired_order = []
@@ -560,44 +560,43 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
             desired_order.append(col)
     df_last5 = df_last5[desired_order]
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
-    
-    col_left, col_right = st.columns([1, 2])
-    with col_left:
-        st.markdown("#### Predictions - Streaming (Sliding Window)")
-        st.write(df_styled)
-        anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
-        if not anomaly_rows.empty:
-            st.write("**Anomaly columns (within top 8)** for these rows:")
-            for idx, row in anomaly_rows.iterrows():
-                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-                if anom_cols:
-                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
-        else:
-            st.write("No anomalies in the displayed records (top 8 features).")
-    with col_right:
-        # Read the forecast state from the query parameters (defaulting to False)
-        default_val = st.query_params.get("forecast_next", "False").lower() == "true"
-        forecast_toggle = st.checkbox(
-            "Forecast next 2 minutes",
-            key="forecast_next_checkbox",
-            value=default_val
-        )
-        # Update the query parameters so that the state is preserved in the URL
-        st.query_params.forecast_next = str(forecast_toggle)
-        plot_timeseries_with_prediction_interactive(
-            df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
-            model=rf_model,
-            feature_columns=st.session_state.get("feature_columns", []),
-            forecast=forecast_toggle
-        )
 
-    
+    # 1) Key Variable Graphs
     st.markdown("### Key Variables (Sliding Window)")
     if not top_features:
         st.warning("Top features are not computed yet. Please start streaming to compute top features.")
     else:
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
-    
+
+    # 2) Actual vs. Predicted Graph
+    st.markdown("### Actual vs Predicted (Streaming)")
+    default_val = st.query_params.get("forecast_next", "False").lower() == "true"
+    forecast_toggle = st.checkbox(
+        "Forecast next 2 minutes",
+        key="forecast_next_checkbox",
+        value=default_val
+    )
+    st.query_params.forecast_next = str(forecast_toggle)
+    plot_timeseries_with_prediction_interactive(
+        df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
+        model=rf_model,
+        feature_columns=st.session_state.get("feature_columns", []),
+        forecast=forecast_toggle
+    )
+
+    # 3) Dataframe & Anomalies
+    st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
+    st.write(df_styled)
+    anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
+    if not anomaly_rows.empty:
+        st.write("**Anomaly columns (within top 8)** for these rows:")
+        for idx, row in anomaly_rows.iterrows():
+            anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+            if anom_cols:
+                st.write(f"Row {idx}: {', '.join(anom_cols)}")
+    else:
+        st.write("No anomalies in the displayed records (top 8 features).")
+
     st.session_state.current_offset += timedelta(seconds=10)
 
 
@@ -610,13 +609,13 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     
     rf_model = st.session_state.get("model", None)
     data_with_preds = predict(rf_model, data_window_adjusted)
-    
+
     top_features = st.session_state.get("top_features", [])
     df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
-    
+
     def highlight_anomaly_row(row):
         return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
-    
+
     df_last5 = df_ana.sort_values('timestamp').tail(5)
     cols = list(df_last5.columns)
     desired_order = []
@@ -631,45 +630,42 @@ def predictions_tab_paused(df_all: pd.DataFrame):
             desired_order.append(col)
     df_last5 = df_last5[desired_order]
     df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
-    
-    col_left, col_right = st.columns([1, 2])
-    with col_left:
-        st.markdown("#### Predictions - Paused (Sliding Window)")
-        st.write(df_styled)
-        anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
-        if not anomaly_rows.empty:
-            st.write("**Anomaly columns (within top 8)**:")
-            for idx, row in anomaly_rows.iterrows():
-                anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-                if anom_cols:
-                    st.write(f"Row {idx}: {', '.join(anom_cols)}")
-        else:
-            st.write("No anomalies in the displayed records (top 8 features).")
-    with col_right:
-        # Read the forecast state from the query parameters (defaulting to False)
-        default_val = st.query_params.get("forecast_next", "False").lower() == "true"
-        forecast_toggle = st.checkbox(
-            "Forecast next 2 minutes",
-            key="forecast_next_checkbox",
-            value=default_val
-        )
-        # Update the query parameters with the current checkbox state
-        st.query_params.forecast_next = str(forecast_toggle)
-        plot_timeseries_with_prediction_interactive(
-            df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
-            model=rf_model,
-            feature_columns=st.session_state.get("feature_columns", []),
-            forecast=forecast_toggle
-        )
 
-
-    
+    # 1) Key Variable Graphs
     st.markdown("### Key Variables (Sliding Window)")
     if not top_features:
         st.warning("Top features are not computed yet. Please start streaming to compute top features.")
     else:
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
 
+    # 2) Actual vs. Predicted Graph
+    st.markdown("### Actual vs Predicted (Paused)")
+    default_val = st.query_params.get("forecast_next", "False").lower() == "true"
+    forecast_toggle = st.checkbox(
+        "Forecast next 2 minutes",
+        key="forecast_next_checkbox",
+        value=default_val
+    )
+    st.query_params.forecast_next = str(forecast_toggle)
+    plot_timeseries_with_prediction_interactive(
+        df=df_ana,
+        model=rf_model,
+        feature_columns=st.session_state.get("feature_columns", []),
+        forecast=forecast_toggle
+    )
+
+    # 3) Dataframe & Anomalies
+    st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
+    st.write(df_styled)
+    anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
+    if not anomaly_rows.empty:
+        st.write("**Anomaly columns (within top 8)**:")
+        for idx, row in anomaly_rows.iterrows():
+            anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
+            if anom_cols:
+                st.write(f"Row {idx}: {', '.join(anom_cols)}")
+    else:
+        st.write("No anomalies in the displayed records (top 8 features).")
 
 
 ###############################################################################
@@ -701,7 +697,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("<h1 style='color:darkblue;'>Full Dataset Metrics</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='color:white;'>Full Dataset Metrics</h1>", unsafe_allow_html=True)
         if full_metrics["mse"] is None:
             st.write("No valid rows for full-dataset metric computation.")
         else:
@@ -711,7 +707,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.markdown(f"<h3 style='color:royalblue;'>R² (Full): {full_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
     
     with col2:
-        st.markdown("<h1 style='color:darkblue;'>Sliding Window Metrics</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='color:white;'>Sliding Window Metrics</h1>", unsafe_allow_html=True)
         if window_metrics["mse"] is None:
             st.write("No valid rows in the sliding window for metric computation.")
         else:
@@ -719,6 +715,36 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.markdown(f"<h2 style='color:tomato;'>MAPE (Window): {window_metrics['mape']:.2f}%</h2>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color:royalblue;'>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color:royalblue;'>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
+            
+        
+    st.write("### Anomaly Detection (Current Window)")
+    with st.form("anomaly_form"):
+        numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
+        default_top_features = st.session_state.get("top_features", None)
+        default_anomaly = (
+            default_top_features[:4]
+            if default_top_features and len(default_top_features) >= 4
+            else (default_top_features if default_top_features else (numeric_cols[:1] if numeric_cols else []))
+        )
+        selected_anomaly_cols = st.multiselect(
+            "Columns to analyze for anomalies (Z-score):",
+            numeric_cols,
+            default=default_anomaly
+        )
+        z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
+        update_button = st.form_submit_button("Update Anomalies")
+
+    if update_button and selected_anomaly_cols:
+        anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
+        anomaly_rate = anomalies_df['any_anomaly'].mean()
+        st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
+        anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
+        if not anomaly_rows.empty:
+            st.write("**Anomalous rows (up to 20 displayed)**:")
+            st.dataframe(anomaly_rows.head(20))
+        else:
+            st.write("No anomalies found with current threshold and columns.")
+        plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
     
     st.markdown("### Full Dataset: Actual vs. Predicted")
     if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
@@ -749,35 +775,7 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         )
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
-    
-    st.write("### Anomaly Detection (Current Window)")
-    with st.form("anomaly_form"):
-        numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
-        default_top_features = st.session_state.get("top_features", None)
-        default_anomaly = (
-            default_top_features[:4]
-            if default_top_features and len(default_top_features) >= 4
-            else (default_top_features if default_top_features else (numeric_cols[:1] if numeric_cols else []))
-        )
-        selected_anomaly_cols = st.multiselect(
-            "Columns to analyze for anomalies (Z-score):",
-            numeric_cols,
-            default=default_anomaly
-        )
-        z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
-        update_button = st.form_submit_button("Update Anomalies")
 
-    if update_button and selected_anomaly_cols:
-        anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
-        anomaly_rate = anomalies_df['any_anomaly'].mean()
-        st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
-        anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
-        if not anomaly_rows.empty:
-            st.write("**Anomalous rows (up to 20 displayed)**:")
-            st.dataframe(anomaly_rows.head(20))
-        else:
-            st.write("No anomalies found with current threshold and columns.")
-        plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
         
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
@@ -931,9 +929,22 @@ def main():
         """,
         unsafe_allow_html=True
     )
-    st.image("res/Miningful_NoBG_WhiteText.png", width=120)
-    st.markdown("### Miningful Predictive Maintenance Demo")
-    
+
+    # Center the logo using column layout
+    st.markdown(
+        f"""
+        <div style="display: flex; justify-content: center;">
+            <a href="http://www.miningfulstudio.eu/">
+                <img src="app/static/Miningful_NoBG_WhiteText.png" 
+                     alt="Miningful" 
+                     style="width:120px;" />
+            </a>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown("### PREDICTIVE MAINTENANCE DEMO")
+
     feature_columns = [
         'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
         'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
@@ -944,44 +955,43 @@ def main():
         'temp_in_z9', 'temp_out_z9'
     ]
     st.session_state.feature_columns = feature_columns
-    
+
     if "stream_data" not in st.session_state:
         st.session_state.stream_data = load_data_remote()
     df_all = st.session_state.stream_data
-    
+
     if "model" not in st.session_state:
         with st.spinner("Training Random Forest model..."):
             model, mse = train_model(df_all)
             st.session_state.model = model
             st.session_state.model_mse = mse
-        
+
     if st.session_state.model is not None:
         st.markdown("<span style='color:green;font-weight:bold;'>Model training complete!</span>", unsafe_allow_html=True)
     else:
         st.warning("Not enough data to train the model.")
-        
+
     if st.session_state.model is not None:
         st.session_state.top_features = get_top_n_features(st.session_state.model, feature_columns, n=8)
-    
+
     if "df_main_anomalies" not in st.session_state:
         max_ts = df_all["timestamp"].max()
-        default_window = df_all[df_all["timestamp"] >= max_ts - pd.Timedelta(hours=1)]
-        window_duration = st.session_state.get("window_duration", 1.0)
-        default_window = get_sliding_window_data(df_all, timedelta(0), window_duration)
+        default_window = get_sliding_window_data(df_all, timedelta(0), 1.0)
         st.session_state["df_main_anomalies"] = predict(st.session_state.model, default_window)
-    
+
     if "streaming" not in st.session_state:
         st.session_state.streaming = False
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
 
-    tab1, tab2, tab3 = st.tabs(["Predictions", "Model Performance", "Data Exploration"])
+    # Updated tab names
+    tab1, tab2, tab3 = st.tabs(["Monitor", "Predictions", "Data Exploration"])
     with tab1:
-        predictions_tab_controller(df_all)
+        predictions_tab_controller(df_all)  # 'Monitor' tab
     with tab2:
-        model_performance_tab(df_all, st.session_state.model, feature_columns)
+        model_performance_tab(df_all, st.session_state.model, feature_columns)  # 'Predictions' tab
     with tab3:
-        data_exploration_tab(df_all, st.session_state.model, feature_columns)
+        data_exploration_tab(df_all, st.session_state.model, feature_columns)   # 'Data Exploration' tab
 
 if __name__ == "__main__":
     main()
