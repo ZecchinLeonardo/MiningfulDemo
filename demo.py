@@ -47,26 +47,43 @@ def load_data_remote():
     return df
 
 def train_model(df: pd.DataFrame):
+    """
+    Trains a RandomForestRegressor using the *new* feature column names.
+    We use 'moisture_in_z0' as our target, which remains unchanged in the new CSV.
+    """
+    # Updated feature column list
     feature_columns = [
-        'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
-        'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
-        'temp_in_z1', 'temp_out_z1', 'temp_in_z2', 'temp_out_z2',
-        'temp_in_z3', 'temp_out_z3', 'temp_in_z4', 'temp_out_z4',
-        'temp_in_z5', 'temp_out_z5', 'temp_in_z6', 'temp_out_z6',
-        'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
-        'temp_in_z9', 'temp_out_z9'
+        'shrink_raw_in_left', 'shrink_raw_in_right',
+        'shrink_raw_out_left', 'shrink_raw_out_right',
+        'paperwidth_in', 'paperwidth_out',
+
+        'temperature_in_z0', 'temperature_out_z0',
+        'temperature_in_z1', 'temperature_out_z1',
+        'temperature_in_z2', 'temperature_out_z2',
+        'temperature_in_z3', 'temperature_out_z3',
+        'temperature_in_z4', 'temperature_out_z4',
+        'temperature_in_z5', 'temperature_out_z5',
+        'temperature_in_z6', 'temperature_out_z6',
+        'temperature_in_z7', 'temperature_out_z7',
+        'temperature_in_z8', 'temperature_out_z8',
+        'temperature_in_z9', 'temperature_out_z9'
     ]
-    target_column = 'moisture_in_z0'
+    target_column = 'moisture_in_z0'  # remains the same
+
+    # Filter out rows missing *any* of the required columns (features + target)
     df_model = df.dropna(subset=feature_columns + [target_column])
     if df_model.empty:
-        return None, None
+        return None, None  # No data to train on
+
     X = df_model[feature_columns]
     y = df_model[target_column]
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
     model = RandomForestRegressor(random_state=42)
     model.fit(X_train, y_train)
+
     predictions = model.predict(X_test)
     mse = mean_squared_error(y_test, predictions)
     return model, mse
@@ -92,25 +109,46 @@ def get_sliding_window_data(df: pd.DataFrame, offset: timedelta, window_duration
 # 4) Prediction & Plotting Utilities
 ###############################################################################
 def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
-    """Use the model to predict 'predicted_moisture' from feature columns."""
+    """
+    Use the trained model to predict 'predicted_moisture' from the *new* feature columns.
+    Force predicted moisture to 0 if the actual (moisture_in_z0) is 0.
+    """
     if model is None or data_window.empty:
         return data_window
+
+    # Same updated feature columns used in train_model
     feature_columns = [
-        'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
-        'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
-        'temp_in_z1', 'temp_out_z1', 'temp_in_z2', 'temp_out_z2',
-        'temp_in_z3', 'temp_out_z3', 'temp_in_z4', 'temp_out_z4',
-        'temp_in_z5', 'temp_out_z5', 'temp_in_z6', 'temp_out_z6',
-        'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
-        'temp_in_z9', 'temp_out_z9'
+        'shrink_raw_in_left', 'shrink_raw_in_right',
+        'shrink_raw_out_left', 'shrink_raw_out_right',
+        'paperwidth_in', 'paperwidth_out',
+
+        'temperature_in_z0', 'temperature_out_z0',
+        'temperature_in_z1', 'temperature_out_z1',
+        'temperature_in_z2', 'temperature_out_z2',
+        'temperature_in_z3', 'temperature_out_z3',
+        'temperature_in_z4', 'temperature_out_z4',
+        'temperature_in_z5', 'temperature_out_z5',
+        'temperature_in_z6', 'temperature_out_z6',
+        'temperature_in_z7', 'temperature_out_z7',
+        'temperature_in_z8', 'temperature_out_z8',
+        'temperature_in_z9', 'temperature_out_z9'
     ]
+    target_column = 'moisture_in_z0'
+
+    # Drop rows where *any* of the required features are missing
     X = data_window[feature_columns].dropna()
     if X.empty:
         return data_window
+
     preds = model.predict(X)
     data_window = data_window.copy()
     data_window['predicted_moisture'] = np.nan
     data_window.loc[X.index, 'predicted_moisture'] = preds
+
+    # Force predicted moisture to 0 if the actual moisture_in_z0 is 0
+    zero_mask = (data_window[target_column] == 0)
+    data_window.loc[zero_mask, 'predicted_moisture'] = 0
+
     return data_window
 
 def plot_timeseries_with_prediction_interactive(
@@ -946,13 +984,20 @@ def main():
     st.markdown("### PREDICTIVE MAINTENANCE DEMO")
 
     feature_columns = [
-        'raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right',
-        'paperwidth_in', 'paperwidth_out', 'temp_in_z0', 'temp_out_z0',
-        'temp_in_z1', 'temp_out_z1', 'temp_in_z2', 'temp_out_z2',
-        'temp_in_z3', 'temp_out_z3', 'temp_in_z4', 'temp_out_z4',
-        'temp_in_z5', 'temp_out_z5', 'temp_in_z6', 'temp_out_z6',
-        'temp_in_z7', 'temp_out_z7', 'temp_in_z8', 'temp_out_z8',
-        'temp_in_z9', 'temp_out_z9'
+        'shrink_raw_in_left', 'shrink_raw_in_right',
+        'shrink_raw_out_left', 'shrink_raw_out_right',
+        'paperwidth_in', 'paperwidth_out',
+
+        'temperature_in_z0', 'temperature_out_z0',
+        'temperature_in_z1', 'temperature_out_z1',
+        'temperature_in_z2', 'temperature_out_z2',
+        'temperature_in_z3', 'temperature_out_z3',
+        'temperature_in_z4', 'temperature_out_z4',
+        'temperature_in_z5', 'temperature_out_z5',
+        'temperature_in_z6', 'temperature_out_z6',
+        'temperature_in_z7', 'temperature_out_z7',
+        'temperature_in_z8', 'temperature_out_z8',
+        'temperature_in_z9', 'temperature_out_z9'
     ]
     st.session_state.feature_columns = feature_columns
 
