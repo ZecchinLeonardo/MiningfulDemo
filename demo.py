@@ -288,44 +288,64 @@ def plot_correlation_custom(df: pd.DataFrame, columns_to_plot: list):
     st.plotly_chart(fig, use_container_width=True)
 
 def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFrame, columns: list):
+    """
+    Compare the distributions of selected numeric columns in the full dataset
+    (df_all) vs. the current window (df_window), using probability density
+    rather than absolute counts.
+
+    We use histnorm='probability density' so that the integral of each histogram is 1, rather than counting the raw number of samples.
+    """
     if not columns:
         st.write("No columns selected for distribution comparison.")
         return
-    
+
     n = len(columns)
     rows = math.ceil(n / 4)
     fig = make_subplots(rows=rows, cols=4, subplot_titles=columns)
+
     for i, col in enumerate(columns, start=1):
         row = math.ceil(i / 4)
         col_pos = i - (row - 1) * 4
-        
+
+        # Plot the overall distribution for the column (density normalized)
         if col in df_all.columns and pd.api.types.is_numeric_dtype(df_all[col]):
             fig.add_trace(
                 go.Histogram(
                     x=df_all[col].dropna(),
-                    histnorm='density',
+                    histnorm='probability density',
                     name='Overall',
                     marker_color='royalblue',
                     opacity=0.6,
                     showlegend=(i == 1)
                 ),
-                row=row, col=col_pos
+                row=row,
+                col=col_pos
             )
+
+        # Plot the window distribution for the column (density normalized)
         if col in df_window.columns and pd.api.types.is_numeric_dtype(df_window[col]):
             fig.add_trace(
                 go.Histogram(
                     x=df_window[col].dropna(),
-                    histnorm='density',
+                    histnorm='probability density',
                     name='Window',
                     marker_color='tomato',
                     opacity=0.6,
                     showlegend=(i == 1)
                 ),
-                row=row, col=col_pos
+                row=row,
+                col=col_pos
             )
+
+        # Label the x-axis with the column name
         fig.update_xaxes(title_text=col, row=row, col=col_pos)
+
+    # Overlay the histograms so they can be compared easily
     fig.update_layout(barmode='overlay', height=400 * rows)
+
+    # Set to True so the chart fills the entire horizontal space of the container
     st.plotly_chart(fig, use_container_width=True)
+
 
 def plot_feature_importances(model, feature_names):
     if not hasattr(model, 'feature_importances_'):
