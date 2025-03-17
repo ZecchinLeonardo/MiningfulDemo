@@ -1001,7 +1001,7 @@ def main():
         """,
         unsafe_allow_html=True
     )
-    st.markdown("### PREDICTIVE MAINTENANCE DEMO")
+    st.markdown("### Predictive Maintenance Demo")
 
     feature_columns = [
         'shrink_raw_in_left', 'shrink_raw_in_right',
