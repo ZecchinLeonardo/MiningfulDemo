@@ -39,7 +39,7 @@ s3 = boto3.client(
 # 2) Data Loading and Model Training
 ###############################################################################
 def load_data_remote():
-    obj = s3.get_object(Bucket='miningfuldemo', Key='datirs_SK.csv')
+    obj = s3.get_object(Bucket='miningfuldemo2', Key='datirs_SK.csv')
     data = obj['Body'].read().decode('utf-8')
     df = pd.read_csv(StringIO(data), sep=';', parse_dates=['to_timestamp'])
     df.rename(columns={'to_timestamp': 'timestamp'}, inplace=True)
