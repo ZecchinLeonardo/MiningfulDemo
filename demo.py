@@ -26,6 +26,7 @@ FIXED_START_TIME = datetime(2023, 2, 17, 9, 23)  # Fixed start: Feb 17 at 9:23
 ###############################################################################
 # 1) AWS Credentials and S3 client
 ###############################################################################
+
 aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
 
@@ -153,9 +154,9 @@ def predict(model, data_window: pd.DataFrame) -> pd.DataFrame:
     return data_window
 
 def plot_timeseries_with_prediction_interactive(
-    df: pd.DataFrame, 
-    model, 
-    feature_columns, 
+    df: pd.DataFrame,
+    model,
+    feature_columns,
     time_col='timestamp',
     actual_col='moisture_in_z0',
     predicted_col='predicted_moisture',
@@ -166,13 +167,12 @@ def plot_timeseries_with_prediction_interactive(
         return
 
     df_filtered = df.dropna(subset=[predicted_col]).copy()
-    
-    # Compute threshold: max(actual moisture) in the last hour + 5%
-    time_cutoff = df_filtered[time_col].max() - pd.Timedelta(hours=1)
-    recent_data = df_filtered[df_filtered[time_col] >= time_cutoff]
-    threshold = recent_data[actual_col].max() * 1.05 if not recent_data.empty else None
+    pred_window = df_filtered[predicted_col].dropna()
+    pred_nonzero = pred_window[pred_window > 0]
+    high_thr = pred_nonzero.quantile(0.90) if not pred_nonzero.empty else pred_window.quantile(0.90)
+    low_thr = pred_nonzero.quantile(0.10) if not pred_nonzero.empty else pred_window.quantile(0.10)
+    out_of_bounds = df_filtered[(df_filtered[actual_col] > high_thr) | (df_filtered[actual_col] < low_thr)]
 
-    # Create basic actual vs. predicted line plot.
     fig = px.line(
         df_filtered,
         x=time_col,
@@ -181,27 +181,22 @@ def plot_timeseries_with_prediction_interactive(
         title="Actual vs. Predicted Moisture Over Time",
         color_discrete_sequence=["royalblue", "tomato"]
     )
-    
-    # Forecast next 2 minutes using future data from simulated datastream
+
     if forecast:
-        # Calculate the forecast window: starting at current window end and lasting 2 minutes (2/60 hours)
-        if ("current_offset" in st.session_state and 
-            "window_duration" in st.session_state and 
+        if ("current_offset" in st.session_state and
+            "window_duration" in st.session_state and
             "stream_data" in st.session_state):
-            
-            # Convert window_duration (float in hours) to a timedelta
             future_offset = st.session_state.current_offset + timedelta(hours=st.session_state.window_duration)
             forecast_window = get_sliding_window_data(
-                st.session_state.stream_data, 
-                future_offset, 
-                2/60  # 2 minutes in hours
+                st.session_state.stream_data,
+                future_offset,
+                2/60
             )
             forecast_window_adjusted = apply_future_feature_adjustments(forecast_window)
             forecast_window_pred = predict(model, forecast_window_adjusted)
             if not forecast_window_pred.empty and not forecast_window_pred[predicted_col].dropna().empty:
                 last_time = df_filtered[time_col].max()
                 last_value = df_filtered[actual_col].iloc[-1]
-                # Prepend the last actual value to connect the forecast with the current series
                 forecast_df = forecast_window_pred.dropna(subset=[predicted_col]).copy()
                 forecast_df = pd.concat([
                     pd.DataFrame({time_col: [last_time], predicted_col: [last_value]}),
@@ -217,29 +212,36 @@ def plot_timeseries_with_prediction_interactive(
                     )
                 )
 
-    if threshold is not None:
-        fig.add_hline(
-            y=threshold,
-            line_color="rgba(128,128,128,0.3)",
-            line_dash="dot",
-            line_width=2,
-            annotation_text="Threshold",
-            annotation_position="bottom right"
-        )
-        unacceptable = df_filtered[df_filtered[actual_col] > threshold]
-        if not unacceptable.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=unacceptable[time_col],
-                    y=unacceptable[actual_col],
-                    mode='markers',
-                    marker=dict(color='red', size=12, symbol='x'),
-                    name="Unacceptable"
-                )
+    fig.add_hrect(y0=low_thr, y1=high_thr, fillcolor="rgba(255,255,255,0.04)", line_width=0)
+    fig.add_hline(y=high_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5,
+                  annotation_text=f"High {high_thr:.2f}", annotation_position="bottom right")
+    fig.add_hline(y=low_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5,
+                  annotation_text=f"Low {low_thr:.2f}", annotation_position="top right")
+
+    if not out_of_bounds.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=out_of_bounds[time_col],
+                y=out_of_bounds[actual_col],
+                mode='markers',
+                marker=dict(color='red', size=6, symbol='circle'),
+                name="Out of bounds"
             )
-    
+        )
+
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
+
+    latest_val = df_filtered.sort_values(time_col).iloc[-1][actual_col]
+    if latest_val > high_thr or latest_val < low_thr:
+        st.markdown(
+            f"<div style='background-color:#B22222;padding:12px;border-radius:6px;margin-top:10px;'>"
+            f"<span style='color:white;font-weight:bold;font-size:16px;'>⚠️ Alarm:</span> "
+            f"<span style='color:white;'>Latest moisture reading {latest_val:.2f} is outside limits.</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
 
 def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
     if not columns_to_plot:
