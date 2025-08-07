@@ -171,7 +171,7 @@ def plot_timeseries_with_prediction_interactive(
     pred_nonzero = pred_window[pred_window > 0]
     high_thr = pred_nonzero.quantile(0.90) if not pred_nonzero.empty else pred_window.quantile(0.90)
     low_thr = pred_nonzero.quantile(0.10) if not pred_nonzero.empty else pred_window.quantile(0.10)
-    out_of_bounds = df_filtered[(df_filtered[actual_col] > high_thr) | (df_filtered[actual_col] < low_thr)]
+    out_of_bounds = df_filtered[(df_filtered[predicted_col] > high_thr) | (df_filtered[predicted_col] < low_thr)]
 
     fig = px.line(
         df_filtered,
@@ -222,22 +222,22 @@ def plot_timeseries_with_prediction_interactive(
         fig.add_trace(
             go.Scatter(
                 x=out_of_bounds[time_col],
-                y=out_of_bounds[actual_col],
+                y=out_of_bounds[predicted_col],
                 mode='markers',
                 marker=dict(color='red', size=6, symbol='circle'),
-                name="Out of bounds"
+                name="Predicted out of bounds"
             )
         )
 
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
-    latest_val = df_filtered.sort_values(time_col).iloc[-1][actual_col]
-    if latest_val > high_thr or latest_val < low_thr:
+    latest_pred = df_filtered.sort_values(time_col).iloc[-1][predicted_col]
+    if latest_pred > high_thr or latest_pred < low_thr:
         st.markdown(
             f"<div style='background-color:#B22222;padding:12px;border-radius:6px;margin-top:10px;'>"
             f"<span style='color:white;font-weight:bold;font-size:16px;'>⚠️ Alarm:</span> "
-            f"<span style='color:white;'>Latest moisture reading {latest_val:.2f} is outside limits.</span>"
+            f"<span style='color:white;'>Latest predicted moisture {latest_pred:.2f} is outside limits.</span>"
             f"</div>",
             unsafe_allow_html=True
         )
