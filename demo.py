@@ -46,6 +46,7 @@ def load_data_remote():
     df = pd.read_csv(StringIO(data), sep=';', parse_dates=['to_timestamp'])
     df.rename(columns={'to_timestamp': 'timestamp'}, inplace=True)
     df.sort_values('timestamp', inplace=True, ignore_index=True)
+    df = df[df['moisture_in_z0'] != 0]
     return df
 
 def train_model(df: pd.DataFrame):
@@ -160,27 +161,44 @@ def plot_timeseries_with_prediction_interactive(
     time_col='timestamp',
     actual_col='moisture_in_z0',
     predicted_col='predicted_moisture',
-    forecast=False
+    forecast=False,
+    include_actual=True
 ):
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
 
     df_filtered = df.dropna(subset=[predicted_col]).copy()
+    y_series = [predicted_col] if not include_actual else [actual_col, predicted_col]
+    fig = px.line(
+        df_filtered,
+        x=time_col,
+        y=y_series,
+        labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
+        title="Predicted Moisture Over Time" if not include_actual else "Actual vs. Predicted Moisture Over Time",
+        color_discrete_sequence=["tomato"] if not include_actual else ["royalblue", "tomato"]
+    )
+
     pred_window = df_filtered[predicted_col].dropna()
     pred_nonzero = pred_window[pred_window > 0]
     high_thr = pred_nonzero.quantile(0.90) if not pred_nonzero.empty else pred_window.quantile(0.90)
     low_thr = pred_nonzero.quantile(0.10) if not pred_nonzero.empty else pred_window.quantile(0.10)
     out_of_bounds = df_filtered[(df_filtered[predicted_col] > high_thr) | (df_filtered[predicted_col] < low_thr)]
 
-    fig = px.line(
-        df_filtered,
-        x=time_col,
-        y=[actual_col, predicted_col],
-        labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
-        title="Actual vs. Predicted Moisture Over Time",
-        color_discrete_sequence=["royalblue", "tomato"]
-    )
+    fig.add_hrect(y0=low_thr, y1=high_thr, fillcolor="rgba(255,255,255,0.04)", line_width=0)
+    fig.add_hline(y=high_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5)
+    fig.add_hline(y=low_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5)
+
+    if not out_of_bounds.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=out_of_bounds[time_col],
+                y=out_of_bounds[predicted_col],
+                mode='markers',
+                marker=dict(color='red', size=6, symbol='circle'),
+                name="Predicted out of bounds"
+            )
+        )
 
     if forecast:
         if ("current_offset" in st.session_state and
@@ -196,7 +214,7 @@ def plot_timeseries_with_prediction_interactive(
             forecast_window_pred = predict(model, forecast_window_adjusted)
             if not forecast_window_pred.empty and not forecast_window_pred[predicted_col].dropna().empty:
                 last_time = df_filtered[time_col].max()
-                last_value = df_filtered[actual_col].iloc[-1]
+                last_value = df_filtered[predicted_col].iloc[-1]
                 forecast_df = forecast_window_pred.dropna(subset=[predicted_col]).copy()
                 forecast_df = pd.concat([
                     pd.DataFrame({time_col: [last_time], predicted_col: [last_value]}),
@@ -212,35 +230,8 @@ def plot_timeseries_with_prediction_interactive(
                     )
                 )
 
-    fig.add_hrect(y0=low_thr, y1=high_thr, fillcolor="rgba(255,255,255,0.04)", line_width=0)
-    fig.add_hline(y=high_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5,
-                  annotation_text=f"High {high_thr:.2f}", annotation_position="bottom right")
-    fig.add_hline(y=low_thr, line_color="rgba(200,200,200,0.5)", line_dash="dot", line_width=1.5,
-                  annotation_text=f"Low {low_thr:.2f}", annotation_position="top right")
-
-    if not out_of_bounds.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=out_of_bounds[time_col],
-                y=out_of_bounds[predicted_col],
-                mode='markers',
-                marker=dict(color='red', size=6, symbol='circle'),
-                name="Predicted out of bounds"
-            )
-        )
-
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
-
-    latest_pred = df_filtered.sort_values(time_col).iloc[-1][predicted_col]
-    if latest_pred > high_thr or latest_pred < low_thr:
-        st.markdown(
-            f"<div style='background-color:#B22222;padding:12px;border-radius:6px;margin-top:10px;'>"
-            f"<span style='color:white;font-weight:bold;font-size:16px;'>⚠️ Alarm:</span> "
-            f"<span style='color:white;'>Latest predicted moisture {latest_pred:.2f} is outside limits.</span>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
 
 
 def plot_distributions_custom(df: pd.DataFrame, columns_to_plot: list):
@@ -479,23 +470,31 @@ def get_top_n_features(model, feature_names, n=8):
     top_indices = indices_desc[:n]
     return [feature_names[i] for i in top_indices]
 
-def apply_feature_adjustments_to_window(data_window: pd.DataFrame) -> pd.DataFrame:
-    adjusted_df = data_window.copy()
-    if "feature_adjustments" in st.session_state:
-        for feat, adj in st.session_state.feature_adjustments.items():
-            if feat in adjusted_df.columns:
-                adjusted_df[feat] = adjusted_df[feat] * (1 + adj / 100.0)
-    return adjusted_df
 
 def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
     adjusted_df = data_window.copy()
-    adj_start = st.session_state.get("adjustment_start_time", adjusted_df["timestamp"].max())
-    if "feature_adjustments" in st.session_state:
-        for feat, adj in st.session_state.feature_adjustments.items():
-            if feat in adjusted_df.columns:
-                mask = adjusted_df["timestamp"] > adj_start
-                adjusted_df.loc[mask, feat] = adjusted_df.loc[mask, feat] * (1 + adj / 100.0)
+
+    feature_adjustments = st.session_state.get("feature_adjustments", {})
+    if not any(adj != 0 for adj in feature_adjustments.values()):
+        return adjusted_df
+
+    adj_start = st.session_state.get("adjustment_start_time")
+    if adj_start is None:
+        adj_start = adjusted_df["timestamp"].max()
+
+    if isinstance(adj_start, pd.Timestamp) and adj_start.tzinfo is not None:
+        adj_start = adj_start.tz_convert(None)
+
+    if isinstance(adjusted_df["timestamp"].dtype, pd.DatetimeTZDtype):
+        adjusted_df["timestamp"] = adjusted_df["timestamp"].dt.tz_convert(None)
+
+    for feat, adj in feature_adjustments.items():
+        if feat in adjusted_df.columns and adj != 0:
+            mask = adjusted_df["timestamp"] > adj_start
+            adjusted_df.loc[mask, feat] = adjusted_df.loc[mask, feat] * (1 + adj / 100.0)
+
     return adjusted_df
+
 
 ###############################################################################
 # 5) Data Exploration Tab
@@ -630,7 +629,7 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
 
     # 2) Actual vs. Predicted Graph
-    st.markdown("### Actual vs Predicted (Streaming)")
+    st.markdown("### Predicted Moisture (Streaming)")
     default_val = st.query_params.get("forecast_next", "False").lower() == "true"
     forecast_toggle = st.checkbox(
         "Forecast next 2 minutes",
@@ -642,8 +641,10 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
         df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
         model=rf_model,
         feature_columns=st.session_state.get("feature_columns", []),
-        forecast=forecast_toggle
+        forecast=forecast_toggle,
+        include_actual=False
     )
+
 
     # 3) Dataframe & Anomalies
     st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
@@ -700,7 +701,7 @@ def predictions_tab_paused(df_all: pd.DataFrame):
         plot_features_2x4_subplots_anomaly(df_ana, top_features)
 
     # 2) Actual vs. Predicted Graph
-    st.markdown("### Actual vs Predicted (Paused)")
+    st.markdown("### Predicted Moisture (Paused)")
     default_val = st.query_params.get("forecast_next", "False").lower() == "true"
     forecast_toggle = st.checkbox(
         "Forecast next 2 minutes",
@@ -709,11 +710,13 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     )
     st.query_params.forecast_next = str(forecast_toggle)
     plot_timeseries_with_prediction_interactive(
-        df=df_ana,
+        df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
         model=rf_model,
         feature_columns=st.session_state.get("feature_columns", []),
-        forecast=forecast_toggle
+        forecast=forecast_toggle,
+        include_actual=False
     )
+
 
     # 3) Dataframe & Anomalies
     st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
@@ -856,6 +859,10 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         step=0.5
     )
     st.session_state.window_duration = window_duration
+    if "feature_adjustments" not in st.session_state:
+        st.session_state.feature_adjustments = {}
+    if "btn_version" not in st.session_state:
+        st.session_state.btn_version = 0
 
     st.sidebar.header("🔄 Retrain Model on Custom Window")
     retrain_enabled = st.sidebar.checkbox("Enable Custom Training Window")
@@ -944,28 +951,37 @@ def predictions_tab_controller(df_all: pd.DataFrame):
         st.write("**Streaming is paused.**")
         predictions_tab_paused(df_all)
         
-    with st.expander("Adjust Top Feature Values", expanded=False):
-        if "top_features" in st.session_state and st.session_state.top_features:
-            adjustments = {}
-            cols = st.columns(4)
-            for i, feat in enumerate(st.session_state.top_features):
-                col = cols[i % 4]
-                adjustments[feat] = col.slider(
-                    label=feat,
-                    min_value=-20, max_value=20,
-                    value=0, step=5,
-                    key=f"adjust_{feat}"
-                )
-            if st.button("Reset Adjustments"):
-                st.session_state.feature_adjustments = {feat: 0 for feat in st.session_state.top_features}
-                st.session_state.adjustment_start_time = None
-            if st.button("Apply Adjustments"):
-                if "df_main_anomalies" in st.session_state:
-                    current_max = st.session_state.df_main_anomalies["timestamp"].max()
-                else:
-                    current_max = pd.Timestamp.now()
-                st.session_state.adjustment_start_time = current_max
-            st.session_state.feature_adjustments = adjustments
+    with st.expander("Influence Top Feature Values", expanded=True):
+        cols = st.columns(4)
+        adjustments = {}
+        for i, feat in enumerate(st.session_state.top_features):
+            key = f"adjust_{feat}"
+            val = cols[i % 4].slider(
+                feat, -20, 20,
+                value=st.session_state.feature_adjustments.get(feat, 0),
+                step=5, key=key
+            )
+            adjustments[feat] = val
+        st.session_state.feature_adjustments = adjustments
+
+        apply_key = f"apply_{st.session_state.btn_version}"
+        if st.button("Apply", key=apply_key):
+            st.session_state.adjustment_start_time = (
+                st.session_state.df_main_anomalies["timestamp"].max()
+            )
+            st.session_state.btn_version += 1
+            st.rerun()
+
+        reset_key = f"reset_{st.session_state.btn_version}"
+        if st.button("Reset", key=reset_key):
+            for feat in st.session_state.top_features:
+                st.session_state.pop(f"adjust_{feat}", None)
+            st.session_state.feature_adjustments = {
+                feat: 0 for feat in st.session_state.top_features
+            }
+            st.session_state.pop("adjustment_start_time", None)
+            st.session_state.btn_version += 1
+            st.rerun()
 
 ###############################################################################
 # 9) Main App
