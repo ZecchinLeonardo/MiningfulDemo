@@ -27,8 +27,9 @@ FIXED_START_TIME = datetime(2023, 2, 17, 9, 23)  # Fixed start: Feb 17 at 9:23
 # 1) AWS Credentials and S3 client
 ###############################################################################
 
-aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID") 
 aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+
 
 s3 = boto3.client(
     's3',
@@ -162,22 +163,49 @@ def plot_timeseries_with_prediction_interactive(
     actual_col='moisture_in_z0',
     predicted_col='predicted_moisture',
     forecast=False,
-    include_actual=True
+    include_actual=False,
+    overlay_df: pd.DataFrame | None = None,
+    overlay_pred_col: str = 'predicted_moisture'
 ):
     if predicted_col not in df.columns or df[predicted_col].dropna().empty:
         st.write("No predictions to plot yet.")
         return
 
     df_filtered = df.dropna(subset=[predicted_col]).copy()
-    y_series = [predicted_col] if not include_actual else [actual_col, predicted_col]
-    fig = px.line(
-        df_filtered,
-        x=time_col,
-        y=y_series,
-        labels={"value": "Moisture", "variable": "Series", time_col: "Time"},
-        title="Predicted Moisture Over Time" if not include_actual else "Actual vs. Predicted Moisture Over Time",
-        color_discrete_sequence=["tomato"] if not include_actual else ["royalblue", "tomato"]
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df_filtered[time_col],
+            y=df_filtered[predicted_col],
+            mode='lines',
+            name="Predicted moisture",
+            line=dict(color="tomato")
+        )
     )
+
+    if include_actual and actual_col in df_filtered.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=df_filtered[time_col],
+                y=df_filtered[actual_col],
+                mode='lines',
+                name="Actual moisture",
+                line=dict(color="royalblue")
+            )
+        )
+
+    if overlay_df is not None and overlay_pred_col in overlay_df.columns and not overlay_df[overlay_pred_col].dropna().empty:
+        odf = overlay_df.dropna(subset=[overlay_pred_col]).copy()
+        fig.add_trace(
+            go.Scatter(
+                x=odf[time_col],
+                y=odf[overlay_pred_col],
+                mode='lines',
+                name="Prediction (adjusted)",
+                line=dict(color="green", dash="dot")
+            )
+        )
 
     pred_window = df_filtered[predicted_col].dropna()
     pred_nonzero = pred_window[pred_window > 0]
@@ -199,36 +227,6 @@ def plot_timeseries_with_prediction_interactive(
                 name="Predicted out of bounds"
             )
         )
-
-    if forecast:
-        if ("current_offset" in st.session_state and
-            "window_duration" in st.session_state and
-            "stream_data" in st.session_state):
-            future_offset = st.session_state.current_offset + timedelta(hours=st.session_state.window_duration)
-            forecast_window = get_sliding_window_data(
-                st.session_state.stream_data,
-                future_offset,
-                2/60
-            )
-            forecast_window_adjusted = apply_future_feature_adjustments(forecast_window)
-            forecast_window_pred = predict(model, forecast_window_adjusted)
-            if not forecast_window_pred.empty and not forecast_window_pred[predicted_col].dropna().empty:
-                last_time = df_filtered[time_col].max()
-                last_value = df_filtered[predicted_col].iloc[-1]
-                forecast_df = forecast_window_pred.dropna(subset=[predicted_col]).copy()
-                forecast_df = pd.concat([
-                    pd.DataFrame({time_col: [last_time], predicted_col: [last_value]}),
-                    forecast_df
-                ])
-                fig.add_trace(
-                    go.Scatter(
-                        x=forecast_df[time_col],
-                        y=forecast_df[predicted_col],
-                        mode='lines',
-                        name="Forecast (2 min)",
-                        line=dict(color="tomato", dash="dot")
-                    )
-                )
 
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
@@ -340,24 +338,70 @@ def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFra
     # Set to True so the chart fills the entire horizontal space of the container
     st.plotly_chart(fig, use_container_width=True)
 
-
-def plot_feature_importances(model, feature_names):
-    if not hasattr(model, 'feature_importances_'):
-        st.write("Model does not have feature importances.")
+def plot_features_stacked_synced_scale(df: pd.DataFrame, features: list, y_range: tuple[float, float], time_col: str = "timestamp"):
+    df_plot = df.copy()
+    if isinstance(df_plot[time_col].dtype, pd.DatetimeTZDtype):
+        df_plot[time_col] = df_plot[time_col].dt.tz_convert(None)
+    n = len(features)
+    if n == 0:
+        st.write("No key variables to display.")
         return
-    importances = model.feature_importances_
-    sorted_idx = np.argsort(importances)
-    sorted_features = [feature_names[i] for i in sorted_idx]
-    sorted_importances = importances[sorted_idx]
-    fig = px.bar(
-        x=sorted_importances,
-        y=sorted_features,
-        orientation='h',
-        labels={'x': 'Importance', 'y': 'Features'},
-        title="Feature Importances (RandomForest)",
-        color_discrete_sequence=['royalblue']
-    )
-    fig.update_layout(height=400)
+
+    fig = make_subplots(rows=n, cols=1, shared_xaxes=True, subplot_titles=features)
+    
+    for i, feat in enumerate(features, start=1):
+        if feat in df_plot.columns and not df_plot[feat].dropna().empty:
+            fig.add_trace(
+                go.Scatter(x=df_plot[time_col], y=df_plot[feat], mode="lines", name=feat),
+                row=i, col=1
+            )
+            
+            # Calculate individual y-range for each feature
+            feat_data = df_plot[feat].dropna()
+            if not feat_data.empty:
+                feat_min = float(feat_data.min())
+                feat_max = float(feat_data.max())
+                
+                # Add padding
+                if feat_min == feat_max:
+                    delta = 1.0 if feat_min == 0 else abs(feat_min) * 0.1
+                    feat_min -= delta
+                    feat_max += delta
+                else:
+                    padding = (feat_max - feat_min) * 0.05
+                    feat_min -= padding
+                    feat_max += padding
+                
+                fig.update_yaxes(range=[feat_min, feat_max], row=i, col=1)
+
+    fig.update_layout(height=max(180 * n, 420), showlegend=False, margin=dict(l=20, r=20, t=50, b=20), hovermode="x unified")
+    st.plotly_chart(fig, use_container_width=True)
+
+def plot_feature_importances(model, feature_columns, top_n=None):
+    importances = None
+    if hasattr(model, "feature_importances_"):
+        importances = np.asarray(model.feature_importances_, dtype=float)
+    elif hasattr(model, "coef_"):
+        importances = np.abs(np.ravel(model.coef_).astype(float))
+    else:
+        st.write("Model does not provide feature importances.")
+        return
+
+    k = min(len(importances), len(feature_columns))
+    df_imp = pd.DataFrame({
+        "feature": feature_columns[:k],
+        "importance": importances[:k]
+    }).dropna()
+
+    df_imp = df_imp.sort_values("importance", ascending=False)
+    if top_n is not None:
+        df_imp = df_imp.head(top_n)
+
+    df_imp = df_imp.sort_values("importance", ascending=True)
+    fig = px.bar(df_imp, x="importance", y="feature", orientation="h", title="Feature Importances (RandomForest)")
+    fig.update_yaxes(title="Features", categoryorder="array", categoryarray=df_imp["feature"].tolist())
+    fig.update_xaxes(title="Importance")
+    fig.update_layout(margin=dict(l=160, r=24, t=40, b=24), height=max(40 * len(df_imp) + 120, 320), bargap=0.2)
     st.plotly_chart(fig, use_container_width=True)
     
 def plot_anomaly_detection_graph(df: pd.DataFrame, anomaly_cols: list):
@@ -470,6 +514,17 @@ def get_top_n_features(model, feature_names, n=8):
     top_indices = indices_desc[:n]
     return [feature_names[i] for i in top_indices]
 
+def apply_feature_adjustments_preview(data_window: pd.DataFrame) -> pd.DataFrame:
+    adjusted_df = data_window.copy()
+    feature_adjustments = st.session_state.get("feature_adjustments", {})
+    if not feature_adjustments:
+        return adjusted_df
+    if isinstance(adjusted_df["timestamp"].dtype, pd.DatetimeTZDtype):
+        adjusted_df["timestamp"] = adjusted_df["timestamp"].dt.tz_convert(None)
+    for feat, adj in feature_adjustments.items():
+        if feat in adjusted_df.columns and adj != 0:
+            adjusted_df[feat] = adjusted_df[feat] * (1 + adj / 100.0)
+    return adjusted_df
 
 def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
     adjusted_df = data_window.copy()
@@ -503,9 +558,7 @@ def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     if "top_features" not in st.session_state or not st.session_state.top_features:
         if model is not None and "feature_columns" in st.session_state:
-            st.session_state.top_features = get_top_n_features(
-                model, st.session_state.feature_columns, n=8
-            )
+            st.session_state.top_features = get_top_n_features(model, st.session_state.feature_columns, n=8)
 
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
@@ -517,7 +570,8 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         "Correlation Heatmap (Full Dataset)",
         "Window Distribution Comparison",
         "Anomaly Detection (Window)",
-        "Feature Importances"
+        "Feature Importances",
+        "Dataframe & Anomalies (Last 5 Rows)"
     ]
     selected_analyses = st.multiselect(
         "Select Analyses to Display",
@@ -526,7 +580,8 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
             "Window Distribution Comparison",
             "Anomaly Detection (Window)",
             "Feature Importances",
-            "Correlation Heatmap (Full Dataset)"
+            "Correlation Heatmap (Full Dataset)",
+            "Dataframe & Anomalies (Last 5 Rows)"
         ]
     )
 
@@ -537,52 +592,61 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         left_col, right_col = st.columns(2)
         with left_col:
             numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-            default_corr = (
-                default_top_features 
-                if default_top_features and len(default_top_features) >= 2 
-                else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
-            )
-            chosen_corr_cols = st.multiselect(
-                "Columns for correlation heatmap",
-                numeric_cols,
-                default=default_corr
-            )
+            default_corr = default_top_features if default_top_features and len(default_top_features) >= 2 else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
+            chosen_corr_cols = st.multiselect("Columns for correlation heatmap", numeric_cols, default=default_corr, key="corr_cols_expl")
             st.write("#### Correlation Heatmap")
             plot_correlation_custom(df_all, chosen_corr_cols)
         with right_col:
             st.write("#### Feature Importances (Model)")
-            plot_feature_importances(model, feature_columns)
+            plot_feature_importances(model, feature_columns, top_n=10)
     elif correlation_selected:
         numeric_cols = df_all.select_dtypes(include=[np.number]).columns.tolist()
-        default_corr = (
-            default_top_features 
-            if default_top_features and len(default_top_features) >= 2 
-            else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
-        )
-        chosen_corr_cols = st.multiselect(
-            "Columns for correlation heatmap",
-            numeric_cols,
-            default=default_corr
-        )
+        default_corr = default_top_features if default_top_features and len(default_top_features) >= 2 else (numeric_cols[:5] if len(numeric_cols) >= 5 else numeric_cols)
+        chosen_corr_cols = st.multiselect("Columns for correlation heatmap", numeric_cols, default=default_corr, key="corr_cols_only")
         st.write("#### Correlation Heatmap")
         plot_correlation_custom(df_all, chosen_corr_cols)
     elif feature_importances_selected:
         st.write("#### Feature Importances (Model)")
-        plot_feature_importances(model, feature_columns)
+        plot_feature_importances(model, feature_columns, top_n=10)
 
     if "Window Distribution Comparison" in selected_analyses:
         st.write("### Window Distribution Comparison")
-        default_dist_cols = (
-            default_top_features 
-            if default_top_features and len(default_top_features) >= 8 
-            else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
-        )
-        selected_cols = st.multiselect(
-            "Select columns for distribution comparison",
-            df_all.select_dtypes(include=[np.number]).columns.tolist(),
-            default=default_dist_cols
-        )
+        default_dist_cols = default_top_features if default_top_features and len(default_top_features) >= 8 else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+        selected_cols = st.multiselect("Select columns for distribution comparison", df_all.select_dtypes(include=[np.number]).columns.tolist(), default=default_dist_cols, key="dist_cols")
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
+
+    if "Anomaly Detection (Window)" in selected_analyses:
+        st.write("### Anomaly Detection (Window)")
+        rf_model = st.session_state.get("model", None)
+        window_with_preds = predict(rf_model, data_window)
+        top_features = st.session_state.get("top_features", [])
+        anomalies_df_window = detect_anomalies_for_features(window_with_preds, top_features, z_threshold=3.0)
+        st.dataframe(anomalies_df_window.tail(200), use_container_width=True)
+
+    if "Dataframe & Anomalies (Last 5 Rows)" in selected_analyses:
+        st.write("### Dataframe & Anomalies (Last 5 Rows)")
+        rf_model = st.session_state.get("model", None)
+        window_with_preds = predict(rf_model, data_window)
+        top_features = st.session_state.get("top_features", [])
+        anomalies_df = detect_anomalies_for_features(window_with_preds, top_features, z_threshold=3.0)
+
+        def highlight_anomaly_row(row):
+            return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
+
+        df_last5 = anomalies_df.sort_values('timestamp').tail(5)
+        cols = list(df_last5.columns)
+        desired_order = []
+        if 'moisture_in_z0' in cols:
+            desired_order.append('moisture_in_z0')
+        if 'predicted_moisture' in cols:
+            desired_order.append('predicted_moisture')
+        if 'timestamp' in cols:
+            desired_order.append('timestamp')
+        for col in cols:
+            if col not in desired_order:
+                desired_order.append(col)
+        df_last5 = df_last5[desired_order]
+        st.write(df_last5.style.apply(highlight_anomaly_row, axis=1))
 
 ###############################################################################
 # 6) Predictions Tabs (Streaming and Paused)
@@ -594,70 +658,44 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
     if "current_offset" not in st.session_state:
         st.session_state.current_offset = timedelta(0)
     data_window = get_sliding_window_data(df_all, st.session_state.current_offset, window_duration)
-    data_window_adjusted = apply_future_feature_adjustments(data_window)
-    
-    rf_model = st.session_state.get("model", None)
-    data_with_preds = predict(rf_model, data_window_adjusted)
 
+    rf_model = st.session_state.get("model", None)
+
+    baseline_preds = predict(rf_model, data_window)
     top_features = st.session_state.get("top_features", [])
-    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
+
+    df_ana = detect_anomalies_for_features(baseline_preds, top_features, z_threshold=3.0)
     st.session_state["df_main_anomalies"] = df_ana
 
-    def highlight_anomaly_row(row):
-        return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
-
-    df_last5 = df_ana.sort_values('timestamp').tail(5)
-    cols = list(df_last5.columns)
-    desired_order = []
-    if 'moisture_in_z0' in cols:
-        desired_order.append('moisture_in_z0')
-    if 'predicted_moisture' in cols:
-        desired_order.append('predicted_moisture')
-    if 'timestamp' in cols:
-        desired_order.append('timestamp')
-    for col in cols:
-        if col not in desired_order:
-            desired_order.append(col)
-    df_last5 = df_last5[desired_order]
-    df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
-
-    # 1) Key Variable Graphs
-    st.markdown("### Key Variables (Sliding Window)")
-    if not top_features:
-        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+    pred_series = df_ana.get("predicted_moisture", pd.Series(dtype=float)).dropna()
+    if pred_series.empty:
+        y_range = (0.0, 1.0)
     else:
-        plot_features_2x4_subplots_anomaly(df_ana, top_features)
+        ymin, ymax = float(pred_series.min()), float(pred_series.max())
+        if ymin == ymax:
+            ymin, ymax = ymin - 1.0, ymax + 1.0
+        y_range = (ymin, ymax)
 
-    # 2) Actual vs. Predicted Graph
-    st.markdown("### Predicted Moisture (Streaming)")
-    default_val = st.query_params.get("forecast_next", "False").lower() == "true"
-    forecast_toggle = st.checkbox(
-        "Forecast next 2 minutes",
-        key="forecast_next_checkbox",
-        value=default_val
-    )
-    st.query_params.forecast_next = str(forecast_toggle)
+    adjustments_nonzero = any(v != 0 for v in st.session_state.get("feature_adjustments", {}).values())
+    overlay_df = None
+    if adjustments_nonzero:
+        preview_adjusted = apply_feature_adjustments_preview(data_window)
+        overlay_df = predict(rf_model, preview_adjusted)
+
+    st.markdown("### Predicted Moisture")
     plot_timeseries_with_prediction_interactive(
-        df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
+        df=df_ana,
         model=rf_model,
         feature_columns=st.session_state.get("feature_columns", []),
-        forecast=forecast_toggle,
-        include_actual=False
+        include_actual=False,
+        overlay_df=overlay_df
     )
 
-
-    # 3) Dataframe & Anomalies
-    st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
-    st.write(df_styled)
-    anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
-    if not anomaly_rows.empty:
-        st.write("**Anomaly columns (within top 8)** for these rows:")
-        for idx, row in anomaly_rows.iterrows():
-            anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-            if anom_cols:
-                st.write(f"Row {idx}: {', '.join(anom_cols)}")
-    else:
-        st.write("No anomalies in the displayed records (top 8 features).")
+    with st.expander("Key Variables (Top 8)"):
+        if not top_features:
+            st.warning("Top features are not computed yet. Start streaming to compute them.")
+        else:
+            plot_features_stacked_synced_scale(df_ana, top_features, y_range)
 
     st.session_state.current_offset += timedelta(seconds=10)
 
@@ -667,70 +705,43 @@ def predictions_tab_paused(df_all: pd.DataFrame):
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-    data_window_adjusted = apply_future_feature_adjustments(data_window)
-    
+
     rf_model = st.session_state.get("model", None)
-    data_with_preds = predict(rf_model, data_window_adjusted)
 
+    baseline_preds = predict(rf_model, data_window)
     top_features = st.session_state.get("top_features", [])
-    df_ana = detect_anomalies_for_features(data_with_preds, top_features, z_threshold=3.0)
 
-    def highlight_anomaly_row(row):
-        return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
+    df_ana = detect_anomalies_for_features(baseline_preds, top_features, z_threshold=3.0)
 
-    df_last5 = df_ana.sort_values('timestamp').tail(5)
-    cols = list(df_last5.columns)
-    desired_order = []
-    if 'moisture_in_z0' in cols:
-        desired_order.append('moisture_in_z0')
-    if 'predicted_moisture' in cols:
-        desired_order.append('predicted_moisture')
-    if 'timestamp' in cols:
-        desired_order.append('timestamp')
-    for col in cols:
-        if col not in desired_order:
-            desired_order.append(col)
-    df_last5 = df_last5[desired_order]
-    df_styled = df_last5.style.apply(highlight_anomaly_row, axis=1)
-
-    # 1) Key Variable Graphs
-    st.markdown("### Key Variables (Sliding Window)")
-    if not top_features:
-        st.warning("Top features are not computed yet. Please start streaming to compute top features.")
+    pred_series = df_ana.get("predicted_moisture", pd.Series(dtype=float)).dropna()
+    if pred_series.empty:
+        y_range = (0.0, 1.0)
     else:
-        plot_features_2x4_subplots_anomaly(df_ana, top_features)
+        ymin, ymax = float(pred_series.min()), float(pred_series.max())
+        if ymin == ymax:
+            ymin, ymax = ymin - 1.0, ymax + 1.0
+        y_range = (ymin, ymax)
 
-    # 2) Actual vs. Predicted Graph
-    st.markdown("### Predicted Moisture (Paused)")
-    default_val = st.query_params.get("forecast_next", "False").lower() == "true"
-    forecast_toggle = st.checkbox(
-        "Forecast next 2 minutes",
-        key="forecast_next_checkbox",
-        value=default_val
-    )
-    st.query_params.forecast_next = str(forecast_toggle)
+    adjustments_nonzero = any(v != 0 for v in st.session_state.get("feature_adjustments", {}).values())
+    overlay_df = None
+    if adjustments_nonzero:
+        preview_adjusted = apply_feature_adjustments_preview(data_window)
+        overlay_df = predict(rf_model, preview_adjusted)
+
+    st.markdown("### Predicted Moisture")
     plot_timeseries_with_prediction_interactive(
-        df=st.session_state.get("df_main_anomalies", pd.DataFrame()),
+        df=df_ana,
         model=rf_model,
         feature_columns=st.session_state.get("feature_columns", []),
-        forecast=forecast_toggle,
-        include_actual=False
+        include_actual=False,
+        overlay_df=overlay_df
     )
 
-
-    # 3) Dataframe & Anomalies
-    st.markdown("### Dataframe & Anomalies (Last 5 Rows)")
-    st.write(df_styled)
-    anomaly_rows = df_last5[df_last5["any_anomaly"] == True]
-    if not anomaly_rows.empty:
-        st.write("**Anomaly columns (within top 8)**:")
-        for idx, row in anomaly_rows.iterrows():
-            anom_cols = [f for f in top_features if row.get(f"{f}_anomaly", False)]
-            if anom_cols:
-                st.write(f"Row {idx}: {', '.join(anom_cols)}")
-    else:
-        st.write("No anomalies in the displayed records (top 8 features).")
-
+    with st.expander("Key Variables (Top 8)"):
+        if not top_features:
+            st.warning("Top features are not computed yet. Start streaming to compute them.")
+        else:
+            plot_features_stacked_synced_scale(df_ana, top_features, y_range)
 
 ###############################################################################
 # 7) Model Performance Tab
