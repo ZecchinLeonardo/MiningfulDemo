@@ -171,7 +171,17 @@ def plot_timeseries_with_prediction_interactive(
         st.write("No predictions to plot yet.")
         return
 
-    df_filtered = df.dropna(subset=[predicted_col]).copy()
+    base_df = df.copy()
+    if isinstance(base_df[time_col].dtype, pd.DatetimeTZDtype):
+        base_df[time_col] = base_df[time_col].dt.tz_convert(None)
+
+    odf = None
+    if overlay_df is not None:
+        odf = overlay_df.copy()
+        if time_col in odf.columns and isinstance(odf[time_col].dtype, pd.DatetimeTZDtype):
+            odf[time_col] = odf[time_col].dt.tz_convert(None)
+
+    df_filtered = base_df.dropna(subset=[predicted_col])
     fig = go.Figure()
 
     fig.add_trace(
@@ -195,12 +205,12 @@ def plot_timeseries_with_prediction_interactive(
             )
         )
 
-    if overlay_df is not None and overlay_pred_col in overlay_df.columns and not overlay_df[overlay_pred_col].dropna().empty:
-        odf = overlay_df.dropna(subset=[overlay_pred_col]).copy()
+    if odf is not None and overlay_pred_col in odf.columns and not odf[overlay_pred_col].dropna().empty:
+        odf2 = odf.dropna(subset=[overlay_pred_col]).copy()
         fig.add_trace(
             go.Scatter(
-                x=odf[time_col],
-                y=odf[overlay_pred_col],
+                x=odf2[time_col],
+                y=odf2[overlay_pred_col],
                 mode='lines',
                 name="Prediction (adjusted)",
                 line=dict(color="green", dash="dot")
@@ -338,7 +348,7 @@ def plot_distribution_comparison_2x4(df_all: pd.DataFrame, df_window: pd.DataFra
     # Set to True so the chart fills the entire horizontal space of the container
     st.plotly_chart(fig, use_container_width=True)
 
-def plot_features_stacked_synced_scale(df: pd.DataFrame, features: list, y_range: tuple[float, float], time_col: str = "timestamp"):
+def plot_features_stacked_synced_scale(df: pd.DataFrame, features: list, y_range: tuple[float, float], time_col: str = "timestamp", z_threshold: float = 3.0):
     df_plot = df.copy()
     if isinstance(df_plot[time_col].dtype, pd.DatetimeTZDtype):
         df_plot[time_col] = df_plot[time_col].dt.tz_convert(None)
@@ -347,22 +357,78 @@ def plot_features_stacked_synced_scale(df: pd.DataFrame, features: list, y_range
         st.write("No key variables to display.")
         return
 
+    color_palette = [
+        "royalblue",      # Blue
+        "tomato",         # Red-orange
+        "mediumseagreen", # Green
+        "mediumpurple",   # Purple
+        "darkorange",     # Orange
+        "steelblue",      # Steel blue
+        "indianred",      # Indian red
+        "darkturquoise"   # Turquoise
+    ]
+    
+    outlier_colors = [
+        "darkblue",
+        "darkred",
+        "darkgreen",
+        "indigo",
+        "darkorange",
+        "midnightblue",
+        "maroon",
+        "teal"
+    ]
+
     fig = make_subplots(rows=n, cols=1, shared_xaxes=True, subplot_titles=features)
     
     for i, feat in enumerate(features, start=1):
         if feat in df_plot.columns and not df_plot[feat].dropna().empty:
+            line_color = color_palette[(i-1) % len(color_palette)]
+            outlier_color = outlier_colors[(i-1) % len(outlier_colors)]
+            
             fig.add_trace(
-                go.Scatter(x=df_plot[time_col], y=df_plot[feat], mode="lines", name=feat),
+                go.Scatter(
+                    x=df_plot[time_col], 
+                    y=df_plot[feat], 
+                    mode="lines", 
+                    name=feat, 
+                    line=dict(color=line_color, width=2)
+                ),
                 row=i, col=1
             )
             
-            # Calculate individual y-range for each feature
-            feat_data = df_plot[feat].dropna()
+            feat_data = df_plot[[time_col, feat]].dropna()
             if not feat_data.empty:
-                feat_min = float(feat_data.min())
-                feat_max = float(feat_data.max())
+                values = feat_data[feat].values
+                mean_val = np.mean(values)
+                std_val = np.std(values)
                 
-                # Add padding
+                if std_val > 0:
+                    z_scores = np.abs((values - mean_val) / std_val)
+                    outlier_mask = z_scores > z_threshold
+                    outliers = feat_data[outlier_mask]
+                    
+                    if not outliers.empty:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=outliers[time_col], 
+                                y=outliers[feat], 
+                                mode="markers",
+                                name=f"{feat} outliers",
+                                marker=dict(
+                                    color="red", 
+                                    size=8, 
+                                    symbol="x", 
+                                    line=dict(width=1.5, color=outlier_color)
+                                ),
+                                showlegend=False
+                            ),
+                            row=i, col=1
+                        )
+                
+                feat_min = float(values.min())
+                feat_max = float(values.max())
+                
                 if feat_min == feat_max:
                     delta = 1.0 if feat_min == 0 else abs(feat_min) * 0.1
                     feat_min -= delta
@@ -374,9 +440,16 @@ def plot_features_stacked_synced_scale(df: pd.DataFrame, features: list, y_range
                 
                 fig.update_yaxes(range=[feat_min, feat_max], row=i, col=1)
 
-    fig.update_layout(height=max(180 * n, 420), showlegend=False, margin=dict(l=20, r=20, t=50, b=20), hovermode="x unified")
+    fig.update_layout(
+        height=max(180 * n, 420), 
+        showlegend=False, 
+        margin=dict(l=20, r=20, t=50, b=20), 
+        hovermode="x unified",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)'
+    )
     st.plotly_chart(fig, use_container_width=True)
-
+    
 def plot_feature_importances(model, feature_columns, top_n=None):
     importances = None
     if hasattr(model, "feature_importances_"):
@@ -702,6 +775,9 @@ def predictions_tab_streaming(df_all: pd.DataFrame):
 
 @fragment(run_every=None)
 def predictions_tab_paused(df_all: pd.DataFrame):
+    df_all = df_all.copy()
+    df_all["timestamp"] = pd.to_datetime(df_all["timestamp"], utc=True).dt.tz_convert(None)
+
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
