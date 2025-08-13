@@ -17,6 +17,7 @@ from io import StringIO
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import shap
 
 ###############################################################################
 # Fixed Start Time Constant (for sliding window)
@@ -636,14 +637,17 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     window_duration = st.session_state.window_duration
     current_offset = st.session_state.get("current_offset", timedelta(0))
     data_window = get_sliding_window_data(df_all, current_offset, window_duration)
-
     default_top_features = st.session_state.get("top_features", None)
+
+    def _mark_explore_active():
+        st.session_state["active_tab_name"] = "Data Exploration"
 
     analysis_options = [
         "Correlation Heatmap (Full Dataset)",
         "Window Distribution Comparison",
         "Anomaly Detection (Window)",
         "Feature Importances",
+        "SHAP Summary (beeswarm)",
         "Dataframe & Anomalies (Last 5 Rows)"
     ]
     selected_analyses = st.multiselect(
@@ -653,9 +657,12 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
             "Window Distribution Comparison",
             "Anomaly Detection (Window)",
             "Feature Importances",
+            "SHAP Summary (beeswarm)",
             "Correlation Heatmap (Full Dataset)",
             "Dataframe & Anomalies (Last 5 Rows)"
-        ]
+        ],
+        key="explore_analyses",
+        on_change=_mark_explore_active
     )
 
     correlation_selected = "Correlation Heatmap (Full Dataset)" in selected_analyses
@@ -684,8 +691,8 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
 
     if "Window Distribution Comparison" in selected_analyses:
         st.write("### Window Distribution Comparison")
-        default_dist_cols = default_top_features if default_top_features and len(default_top_features) >= 8 else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
-        selected_cols = st.multiselect("Select columns for distribution comparison", df_all.select_dtypes(include=[np.number]).columns.tolist(), default=default_dist_cols, key="dist_cols")
+        default_dist_cols = default_top_features if default_top_features and len(default_top_features) >= 2 else ['raw_in_left', 'raw_in_right', 'raw_out_left', 'raw_out_right']
+        selected_cols = st.multiselect("Select columns for distribution plots", df_all.select_dtypes(include=[np.number]).columns.tolist(), default=default_dist_cols, key="dist_cols")
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
 
     if "Anomaly Detection (Window)" in selected_analyses:
@@ -702,10 +709,8 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         window_with_preds = predict(rf_model, data_window)
         top_features = st.session_state.get("top_features", [])
         anomalies_df = detect_anomalies_for_features(window_with_preds, top_features, z_threshold=3.0)
-
         def highlight_anomaly_row(row):
             return ["background-color: yellow" if row.get("any_anomaly", False) else "" for _ in row]
-
         df_last5 = anomalies_df.sort_values('timestamp').tail(5)
         cols = list(df_last5.columns)
         desired_order = []
@@ -720,6 +725,24 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
                 desired_order.append(col)
         df_last5 = df_last5[desired_order]
         st.write(df_last5.style.apply(highlight_anomaly_row, axis=1))
+
+    if "SHAP Summary (beeswarm)" in selected_analyses:
+        if model is not None and feature_columns:
+            with st.spinner("Computing SHAP..."):
+                X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
+                if len(X) > 0:
+                    n_rows = min(len(X), 1200)
+                    X_sample = X.sample(n_rows, random_state=7)
+                    bg_rows = min(len(X_sample), 240)
+                    bg = X_sample.sample(bg_rows, random_state=11)
+                    explainer = shap.Explainer(model, bg)
+                    shap_values = explainer(X_sample, check_additivity=False)
+                    fig_bee = plt.figure()
+                    fig_bee.set_size_inches(6.6, 3.8)
+                    shap.summary_plot(shap_values.values, X_sample, max_display=20, show=False)
+                    st.pyplot(fig_bee, use_container_width=True)
+                else:
+                    st.write("No numeric features available for SHAP.")
 
 ###############################################################################
 # 6) Predictions Tabs (Streaming and Paused)
@@ -822,7 +845,6 @@ def predictions_tab_paused(df_all: pd.DataFrame):
 ###############################################################################
 # 7) Model Performance Tab
 ###############################################################################
-@fragment(run_every=None)
 def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
     if model is None:
         st.warning("No trained model available. Please train the model first.")
@@ -867,51 +889,6 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
             st.markdown(f"<h3 style='color:royalblue;'>MSE (Window): {window_metrics['mse']:.4f}</h3>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='color:royalblue;'>R² (Window): {window_metrics['r2']:.4f}</h3>", unsafe_allow_html=True)
             
-        
-    st.write("### Anomaly Detection (Current Window)")
-    with st.form("anomaly_form"):
-        numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
-        default_top_features = st.session_state.get("top_features", None)
-        default_anomaly = (
-            default_top_features[:4]
-            if default_top_features and len(default_top_features) >= 4
-            else (default_top_features if default_top_features else (numeric_cols[:1] if numeric_cols else []))
-        )
-        selected_anomaly_cols = st.multiselect(
-            "Columns to analyze for anomalies (Z-score):",
-            numeric_cols,
-            default=default_anomaly
-        )
-        z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
-        update_button = st.form_submit_button("Update Anomalies")
-
-    if update_button and selected_anomaly_cols:
-        anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
-        anomaly_rate = anomalies_df['any_anomaly'].mean()
-        st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
-        anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
-        if not anomaly_rows.empty:
-            st.write("**Anomalous rows (up to 20 displayed)**:")
-            st.dataframe(anomaly_rows.head(20))
-        else:
-            st.write("No anomalies found with current threshold and columns.")
-        plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
-    
-    st.markdown("### Full Dataset: Actual vs. Predicted")
-    if "predicted_moisture_full" not in df_all_preds or df_all_preds["predicted_moisture_full"].dropna().empty:
-        st.write("No valid predictions for full dataset.")
-    else:
-        fig_full = px.line(
-            df_all_preds.dropna(subset=["predicted_moisture_full", "moisture_in_z0"]),
-            x="timestamp",
-            y=["moisture_in_z0", "predicted_moisture_full"],
-            labels={"value": "Moisture", "variable": "Series", "timestamp": "Time"},
-            title="Full Dataset: Actual vs. Predicted Moisture",
-            color_discrete_sequence=["royalblue", "tomato"]
-        )
-        fig_full.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(fig_full, use_container_width=True)
-    
     st.markdown("### Sliding Window: Actual vs. Predicted")
     if df_window_preds["predicted_moisture"].dropna().empty:
         st.write("No valid predictions for the sliding window.")
@@ -927,10 +904,10 @@ def model_performance_tab(df_all: pd.DataFrame, model, feature_columns):
         fig_window.update_layout(height=400, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig_window, use_container_width=True)
 
-        
     if "retrained_on" in st.session_state:
         retrain_start, retrain_end = st.session_state.retrained_on
         st.markdown(f"**Model was retrained on data from {retrain_start} to {retrain_end}.**")
+
 
 ###############################################################################
 # 8) Predictions Tab Controller
