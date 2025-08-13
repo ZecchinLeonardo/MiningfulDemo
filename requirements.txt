@@ -9,3 +9,4 @@ boto3
 plotly
 tensorflow
 keras
+shap
