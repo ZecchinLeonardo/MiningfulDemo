@@ -6,6 +6,7 @@ import numpy as np
 import time
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import seaborn as sns
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -731,16 +732,37 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
             with st.spinner("Computing SHAP..."):
                 X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
                 if len(X) > 0:
-                    n_rows = min(len(X), 1200)
+                    n_rows = min(len(X), 800)
                     X_sample = X.sample(n_rows, random_state=7)
                     bg_rows = min(len(X_sample), 240)
                     bg = X_sample.sample(bg_rows, random_state=11)
                     explainer = shap.Explainer(model, bg)
                     shap_values = explainer(X_sample, check_additivity=False)
-                    fig_bee = plt.figure()
-                    fig_bee.set_size_inches(6.6, 3.8)
-                    shap.summary_plot(shap_values.values, X_sample, max_display=20, show=False)
-                    st.pyplot(fig_bee, use_container_width=True)
+                    
+                    bg = st.get_option("theme.backgroundColor") or "#0E1117"
+                    fg = st.get_option("theme.textColor") or "#FFFFFF"
+
+                    with mpl.rc_context({
+                        "figure.facecolor": bg,
+                        "savefig.facecolor": bg,
+                        "axes.facecolor": bg,
+                        "axes.edgecolor": fg,
+                        "axes.labelcolor": fg,
+                        "xtick.color": fg,
+                        "ytick.color": fg,
+                        "text.color": fg,
+                    }):
+                        fig_bee = plt.figure(figsize=(12, 4.4), dpi=120)
+                        shap.summary_plot(shap_values.values, X_sample, max_display=8, show=False, plot_size=(12, 4.4))
+                        for ax in fig_bee.axes:
+                            ax.set_facecolor(bg)
+                            for s in ax.spines.values():
+                                s.set_color(fg)
+                            ax.tick_params(colors=fg)
+                            for t in ax.get_xticklabels() + ax.get_yticklabels():
+                                t.set_color(fg)
+                        plt.tight_layout()
+                        st.pyplot(fig_bee, use_container_width=True)
                 else:
                     st.write("No numeric features available for SHAP.")
 
