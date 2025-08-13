@@ -19,6 +19,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import shap
+import threading, io
 
 ###############################################################################
 # Fixed Start Time Constant (for sliding window)
@@ -473,7 +474,7 @@ def plot_feature_importances(model, feature_columns, top_n=None):
         df_imp = df_imp.head(top_n)
 
     df_imp = df_imp.sort_values("importance", ascending=True)
-    fig = px.bar(df_imp, x="importance", y="feature", orientation="h", title="Feature Importances (RandomForest)")
+    fig = px.bar(df_imp, x="importance", y="feature", orientation="h", title="Feature Importances on full dataset (RandomForest)")
     fig.update_yaxes(title="Features", categoryorder="array", categoryarray=df_imp["feature"].tolist())
     fig.update_xaxes(title="Importance")
     fig.update_layout(margin=dict(l=160, r=24, t=40, b=24), height=max(40 * len(df_imp) + 120, 320), bargap=0.2)
@@ -629,6 +630,63 @@ def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
 ###############################################################################
 # 5) Data Exploration Tab
 ###############################################################################
+def generate_shap_beeswarm_png(df_all, feature_columns):
+    model = st.session_state.get("model", None)
+    if model is None or not feature_columns:
+        return None
+    X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
+    if len(X) == 0:
+        return None
+    n_rows = min(len(X), 2000)
+    X_sample = X.sample(n_rows, random_state=21)
+    bg_rows = min(len(X_sample), 400)
+    bg = X_sample.sample(bg_rows, random_state=37)
+    explainer = shap.Explainer(model, bg)
+    shap_values = explainer(X_sample, check_additivity=False)
+    bgc = st.get_option("theme.backgroundColor") or "#0E1117"
+    fgc = st.get_option("theme.textColor") or "#FFFFFF"
+    with mpl.rc_context({
+        "figure.facecolor": bgc,
+        "savefig.facecolor": bgc,
+        "axes.facecolor": bgc,
+        "axes.edgecolor": fgc,
+        "axes.labelcolor": fgc,
+        "xtick.color": fgc,
+        "ytick.color": fgc,
+        "text.color": fgc,
+    }):
+        fig = plt.figure(figsize=(12, 4.4), dpi=120)
+        shap.summary_plot(shap_values.values, X_sample, max_display=8, show=False, plot_size=(12, 4.4))
+        for ax in fig.axes:
+            ax.set_facecolor(bgc)
+            for s in ax.spines.values():
+                s.set_color(fgc)
+            ax.tick_params(colors=fgc)
+            for t in ax.get_xticklabels() + ax.get_yticklabels():
+                t.set_color(fgc)
+        buf = io.BytesIO()
+        plt.tight_layout()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        return buf.getvalue()
+
+def kickoff_shap_precompute(df_all, feature_columns):
+    model = st.session_state.get("model", None)
+    if model is None:
+        return
+    model_id = id(model)
+    if st.session_state.get("shap_model_id") != model_id:
+        st.session_state["shap_model_id"] = model_id
+        st.session_state["shap_png"] = None
+        st.session_state["shap_ready"] = False
+        def _worker():
+            png = generate_shap_beeswarm_png(df_all, feature_columns)
+            st.session_state["shap_png"] = png
+            st.session_state["shap_ready"] = png is not None
+            st.rerun()
+        threading.Thread(target=_worker, daemon=True).start()
+
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
     if "top_features" not in st.session_state or not st.session_state.top_features:
@@ -728,6 +786,7 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         st.write(df_last5.style.apply(highlight_anomaly_row, axis=1))
 
     if "SHAP Summary (beeswarm)" in selected_analyses:
+        st.write("### SHAP Summary on smaller sample (beeswarm)")
         if model is not None and feature_columns:
             with st.spinner("Computing SHAP..."):
                 X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
