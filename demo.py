@@ -12,14 +12,18 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import math
-import os
+import os, threading, io, hashlib, pickle
 import boto3
 from io import StringIO
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import shap
-import threading, io
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except Exception:
+    def add_script_run_ctx(t, ctx=None): return
+    def get_script_run_ctx(): return None
 
 ###############################################################################
 # Fixed Start Time Constant (for sliding window)
@@ -630,62 +634,111 @@ def apply_future_feature_adjustments(data_window: pd.DataFrame) -> pd.DataFrame:
 ###############################################################################
 # 5) Data Exploration Tab
 ###############################################################################
-def generate_shap_beeswarm_png(df_all, feature_columns):
-    model = st.session_state.get("model", None)
+
+def model_fingerprint(model, feature_columns):
+    try:
+        params = model.get_params(deep=False)
+    except Exception:
+        params = {}
+    fi = getattr(model, "feature_importances_", None)
+    payload = (
+        model.__class__.__name__,
+        params,
+        tuple(feature_columns),
+        None if fi is None else np.round(np.asarray(fi), 8).tolist()
+    )
+    return hashlib.sha1(pickle.dumps(payload)).hexdigest()
+
+def generate_shap_beeswarm_png_to_file(df_all, feature_columns, model, cache_dir=".shap_cache", bgc=None, fgc=None):
+    import shap
+    print("SHAP: Generating beeswarm plot for feature importances...")
     if model is None or not feature_columns:
+        print("SHAP: No model or feature columns available.")
         return None
+    os.makedirs(cache_dir, exist_ok=True)
+    key = model_fingerprint(model, feature_columns)
+    path = os.path.join(cache_dir, f"shap_bee_{key}.png")
+    if os.path.exists(path):
+        print(f"SHAP: Using cached file {path}")
+        return path
     X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
     if len(X) == 0:
+        print("SHAP: No valid data available for SHAP computation.")
         return None
-    n_rows = min(len(X), 2000)
+    if hasattr(model, "feature_importances_") and len(getattr(model, "feature_importances_", [])) == len(feature_columns):
+        order_all = pd.Series(model.feature_importances_, index=feature_columns).sort_values(ascending=False).index.tolist()
+    else:
+        order_all = st.session_state.get("feature_importance_order", feature_columns)
+    keep = [c for c in order_all if c in X.columns][:8]
+    if not keep:
+        print("SHAP: No features to keep for SHAP computation.")
+        return None
+    X = X[keep]
+    n_rows = min(len(X), 800)
     X_sample = X.sample(n_rows, random_state=21)
-    bg_rows = min(len(X_sample), 400)
+    bg_rows = min(len(X_sample), 800)
     bg = X_sample.sample(bg_rows, random_state=37)
     explainer = shap.Explainer(model, bg)
     shap_values = explainer(X_sample, check_additivity=False)
-    bgc = st.get_option("theme.backgroundColor") or "#0E1117"
-    fgc = st.get_option("theme.textColor") or "#FFFFFF"
-    with mpl.rc_context({
-        "figure.facecolor": bgc,
-        "savefig.facecolor": bgc,
-        "axes.facecolor": bgc,
-        "axes.edgecolor": fgc,
-        "axes.labelcolor": fgc,
-        "xtick.color": fgc,
-        "ytick.color": fgc,
-        "text.color": fgc,
-    }):
+    if bgc is None:
+        bgc = "#0E1117"
+    if fgc is None:
+        fgc = "#FFFFFF"
+    with mpl.rc_context({"figure.facecolor": bgc, "savefig.facecolor": bgc, "axes.facecolor": bgc, "axes.edgecolor": fgc, "axes.labelcolor": fgc, "xtick.color": fgc, "ytick.color": fgc, "text.color": fgc}):
         fig = plt.figure(figsize=(12, 4.4), dpi=120)
-        shap.summary_plot(shap_values.values, X_sample, max_display=8, show=False, plot_size=(12, 4.4))
-        for ax in fig.axes:
-            ax.set_facecolor(bgc)
-            for s in ax.spines.values():
-                s.set_color(fgc)
-            ax.tick_params(colors=fgc)
-            for t in ax.get_xticklabels() + ax.get_yticklabels():
-                t.set_color(fgc)
-        buf = io.BytesIO()
+        shap.summary_plot(shap_values, X_sample, max_display=len(keep), sort=False, show=False, plot_size=(12, 4.4))
+        ax = plt.gca()
+        ax.set_facecolor(bgc)
+        for s in ax.spines.values():
+            s.set_color(fgc)
+        ax.tick_params(colors=fgc)
+        for t in ax.get_xticklabels() + ax.get_yticklabels():
+            t.set_color(fgc)
         plt.tight_layout()
-        fig.savefig(buf, format="png", bbox_inches="tight")
+        fig.savefig(path, format="png", bbox_inches="tight")
         plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
+    print(f"SHAP: Generated SHAP beeswarm plot and saved to {path}")
+    return path
 
-def kickoff_shap_precompute(df_all, feature_columns):
-    model = st.session_state.get("model", None)
+def kickoff_shap_precompute(df_all, feature_columns, model, cache_dir=".shap_cache"):
     if model is None:
         return
-    model_id = id(model)
-    if st.session_state.get("shap_model_id") != model_id:
-        st.session_state["shap_model_id"] = model_id
-        st.session_state["shap_png"] = None
+    os.makedirs(cache_dir, exist_ok=True)
+    key = model_fingerprint(model, feature_columns)
+    path = os.path.join(cache_dir, f"shap_bee_{key}.png")
+    st.session_state["shap_cache_path"] = path
+    if os.path.exists(path):
+        st.session_state["shap_ready"] = True
+        st.session_state.pop("shap_building_key", None)
+        return
+    if st.session_state.get("shap_building_key") == key:
+        return
+    st.session_state["shap_building_key"] = key
+    st.session_state["shap_ready"] = False
+    bgc = st.get_option("theme.backgroundColor") or "#0E1117"
+    fgc = st.get_option("theme.textColor") or "#FFFFFF"
+    def _worker(df_copy, feats, model, cd, _bgc, _fgc):
+        generate_shap_beeswarm_png_to_file(df_copy, feats, model, cache_dir=cd, bgc=_bgc, fgc=_fgc)
+    t = threading.Thread(target=_worker, args=(df_all.copy(), list(feature_columns), model, cache_dir, bgc, fgc), daemon=True, name=f"shap-{key[:8]}")
+    t.start()
+
+def render_shap_beeswarm_section(df_all, feature_columns, model, cache_dir=".shap_cache"):
+    kickoff_shap_precompute(df_all, feature_columns, model, cache_dir)
+    p = st.session_state.get("shap_cache_path", None)
+    ph = st.empty()
+    if p and os.path.exists(p):
+        st.session_state["shap_ready"] = True
+        ph.image(p, use_container_width=True)
+    else:
         st.session_state["shap_ready"] = False
-        def _worker():
-            png = generate_shap_beeswarm_png(df_all, feature_columns)
-            st.session_state["shap_png"] = png
-            st.session_state["shap_ready"] = png is not None
+        ph.info("Precomputing SHAP…")
+        last = st.session_state.get("shap_last_poll", 0.0)
+        now = time.time()
+        if now - last >= 0.7:
+            st.session_state["shap_last_poll"] = now
             st.rerun()
-        threading.Thread(target=_worker, daemon=True).start()
+
+
 
 @fragment
 def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
@@ -755,12 +808,34 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         plot_distribution_comparison_2x4(df_all, data_window, selected_cols)
 
     if "Anomaly Detection (Window)" in selected_analyses:
-        st.write("### Anomaly Detection (Window)")
-        rf_model = st.session_state.get("model", None)
-        window_with_preds = predict(rf_model, data_window)
-        top_features = st.session_state.get("top_features", [])
-        anomalies_df_window = detect_anomalies_for_features(window_with_preds, top_features, z_threshold=3.0)
-        st.dataframe(anomalies_df_window.tail(200), use_container_width=True)
+        st.write("### Anomaly Detection (Current Window)")
+        with st.form("anomaly_form"):
+            numeric_cols = data_window.select_dtypes(include=[np.number]).columns.tolist()
+            default_top_features_local = st.session_state.get("top_features", None)
+            default_anomaly = (
+                default_top_features_local[:4]
+                if default_top_features_local and len(default_top_features_local) >= 4
+                else (default_top_features_local if default_top_features_local else (numeric_cols[:1] if numeric_cols else []))
+            )
+            selected_anomaly_cols = st.multiselect(
+                "Columns to analyze for anomalies (Z-score):",
+                numeric_cols,
+                default=default_anomaly
+            )
+            z_threshold = st.slider("Z-score threshold:", 2.0, 5.0, 3.0, 0.1)
+            update_button = st.form_submit_button("Update Anomalies")
+
+        if update_button and selected_anomaly_cols:
+            anomalies_df = detect_anomalies_for_features(data_window, selected_anomaly_cols, z_threshold=z_threshold)
+            anomaly_rate = anomalies_df['any_anomaly'].mean()
+            st.write(f"**Anomaly Rate (Window)**: {anomaly_rate*100:.2f}%")
+            anomaly_rows = anomalies_df[anomalies_df['any_anomaly'] == True]
+            if not anomaly_rows.empty:
+                st.write("**Anomalous rows (up to 20 displayed)**:")
+                st.dataframe(anomaly_rows.head(20))
+            else:
+                st.write("No anomalies found with current threshold and columns.")
+            plot_anomaly_detection_graph(anomalies_df, selected_anomaly_cols)
 
     if "Dataframe & Anomalies (Last 5 Rows)" in selected_analyses:
         st.write("### Dataframe & Anomalies (Last 5 Rows)")
@@ -786,44 +861,8 @@ def data_exploration_tab(df_all: pd.DataFrame, model, feature_columns):
         st.write(df_last5.style.apply(highlight_anomaly_row, axis=1))
 
     if "SHAP Summary (beeswarm)" in selected_analyses:
-        st.write("### SHAP Summary on smaller sample (beeswarm)")
-        if model is not None and feature_columns:
-            with st.spinner("Computing SHAP..."):
-                X = df_all[feature_columns].select_dtypes(include=[np.number]).dropna()
-                if len(X) > 0:
-                    n_rows = min(len(X), 800)
-                    X_sample = X.sample(n_rows, random_state=7)
-                    bg_rows = min(len(X_sample), 240)
-                    bg = X_sample.sample(bg_rows, random_state=11)
-                    explainer = shap.Explainer(model, bg)
-                    shap_values = explainer(X_sample, check_additivity=False)
-                    
-                    bg = st.get_option("theme.backgroundColor") or "#0E1117"
-                    fg = st.get_option("theme.textColor") or "#FFFFFF"
+        render_shap_beeswarm_section(df_all, feature_columns, model)
 
-                    with mpl.rc_context({
-                        "figure.facecolor": bg,
-                        "savefig.facecolor": bg,
-                        "axes.facecolor": bg,
-                        "axes.edgecolor": fg,
-                        "axes.labelcolor": fg,
-                        "xtick.color": fg,
-                        "ytick.color": fg,
-                        "text.color": fg,
-                    }):
-                        fig_bee = plt.figure(figsize=(12, 4.4), dpi=120)
-                        shap.summary_plot(shap_values.values, X_sample, max_display=8, show=False, plot_size=(12, 4.4))
-                        for ax in fig_bee.axes:
-                            ax.set_facecolor(bg)
-                            for s in ax.spines.values():
-                                s.set_color(fg)
-                            ax.tick_params(colors=fg)
-                            for t in ax.get_xticklabels() + ax.get_yticklabels():
-                                t.set_color(fg)
-                        plt.tight_layout()
-                        st.pyplot(fig_bee, use_container_width=True)
-                else:
-                    st.write("No numeric features available for SHAP.")
 
 ###############################################################################
 # 6) Predictions Tabs (Streaming and Paused)
