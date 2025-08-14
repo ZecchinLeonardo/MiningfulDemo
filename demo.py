@@ -649,7 +649,7 @@ def model_fingerprint(model, feature_columns):
     )
     return hashlib.sha1(pickle.dumps(payload)).hexdigest()
 
-def generate_shap_beeswarm_png_to_file(df_all, feature_columns, model, cache_dir=".shap_cache", bgc=None, fgc=None):
+def generate_shap_beeswarm_png_to_file(df_all, feature_columns, model, cache_dir=".shap_cache2", bgc=None, fgc=None):
     import shap
     print("SHAP: Generating beeswarm plot for feature importances...")
     if model is None or not feature_columns:
@@ -674,7 +674,7 @@ def generate_shap_beeswarm_png_to_file(df_all, feature_columns, model, cache_dir
         print("SHAP: No features to keep for SHAP computation.")
         return None
     X = X[keep]
-    n_rows = min(len(X), 800)
+    n_rows = min(len(X), 4000)
     X_sample = X.sample(n_rows, random_state=21)
     bg_rows = min(len(X_sample), 800)
     bg = X_sample.sample(bg_rows, random_state=37)
