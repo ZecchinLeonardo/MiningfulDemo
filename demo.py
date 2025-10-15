@@ -1,3 +1,10 @@
+import os
+os.environ["MPLBACKEND"] = "Agg"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import streamlit as st
 st.set_page_config(page_title="Predictive Maintenance Demo", layout="wide")
 from streamlit.runtime.fragment import fragment
@@ -5,17 +12,16 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import math
-import os
 import boto3
 from io import StringIO
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
+
+
+import boto3
+from io import StringIO
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 ###############################################################################
@@ -52,6 +58,8 @@ def train_model(df: pd.DataFrame):
     Trains a RandomForestRegressor using the *new* feature column names.
     We use 'moisture_in_z0' as our target, which remains unchanged in the new CSV.
     """
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import train_test_split
     # Updated feature column list
     feature_columns = [
         'shrink_raw_in_left', 'shrink_raw_in_right',
